@@ -1,0 +1,109 @@
+{
+  "updated": "October 1, 2026",
+  "contact": "kostakarathanasopoulos@proton.me",
+  "baseURL": "https://kostakarathana.github.io/cloudchess-support/",
+  "pages": [
+    {
+      "id": "privacy",
+      "title": "Privacy policy",
+      "symbol": "hand.raised",
+      "sections": [
+        {
+          "title": "Your game stays on your device",
+          "body": "CloudChess is developed by Kosta Karathanasopoulos. Puzzle generation, chess analysis and adaptive coaching run on your device. Progress, scores, preferences, collected styles and coaching estimates are stored locally. The app has no advertising or analytics SDK and does not send gameplay or coaching records to a CloudChess server."
+        },
+        {
+          "title": "Optional profile imports",
+          "body": "If you request a Chess.com or Lichess profile import, the app sends the username you enter directly to the selected provider over HTTPS to download public games. That provider receives the network request, including your IP address, and handles it under its own privacy policy. CloudChess does not ask for your provider password or sign you into that account. Downloaded games and the resulting analysis are stored and processed on your device."
+        },
+        {
+          "title": "Storage and removal",
+          "body": "Local records remain until removed with the app. To remove CloudChess's local data, use Delete App in iOS Settings; Offload App retains data. Deleting CloudChess does not delete your Chess.com or Lichess account or its public games. Device backups may contain app data according to your Apple backup settings; manage those backups in your device settings."
+        },
+        {
+          "title": "Support and external pages",
+          "body": "When you email support, we receive the address and information you choose to send and use them to respond to your request. Do not include passwords. You can request deletion of support correspondence by emailing the same address. Opening an external link contacts its website. Our public policy and support pages are hosted by GitHub Pages; GitHub may process standard request information under its privacy statement. The pages do not contain our own analytics or tracking cookies."
+        },
+        {
+          "title": "Questions and updates",
+          "body": "Contact kostakarathanasopoulos@proton.me with privacy questions. Changes to these practices will be reflected in this policy and its updated date."
+        }
+      ],
+      "links": [
+        {
+          "title": "Chess.com privacy policy",
+          "url": "https://www.chess.com/legal/privacy"
+        },
+        {
+          "title": "Lichess privacy policy",
+          "url": "https://lichess.org/privacy"
+        },
+        {
+          "title": "GitHub privacy statement",
+          "url": "https://docs.github.com/en/site-policy/privacy-policies/github-general-privacy-statement"
+        }
+      ]
+    },
+    {
+      "id": "support",
+      "title": "Support",
+      "symbol": "envelope",
+      "sections": [
+        {
+          "title": "Get in touch",
+          "body": "Email kostakarathanasopoulos@proton.me for CloudChess support or privacy questions. Include your app version, device model and what happened. Screenshots are optional. Never send account passwords."
+        },
+        {
+          "title": "Profile analysis",
+          "body": "Select Chess.com or Lichess, then enter your username rather than a full link. Downloading public games requires internet access. Puzzle play and analysis of games already downloaded run on your phone."
+        },
+        {
+          "title": "Puzzle generation",
+          "body": "Puzzle analysis runs locally and can take longer on older devices or complex positions. Keep the app open while a puzzle is being prepared. If an error appears, use the retry control. You do not need a computer or a CloudChess account to play."
+        },
+        {
+          "title": "Saved progress",
+          "body": "Scores and collected styles are stored on this device. Updating the app preserves its local data. Deleting the app removes local progress; avoid deleting it as a troubleshooting step unless you intend to reset it."
+        }
+      ],
+      "links": []
+    },
+    {
+      "id": "licenses",
+      "title": "Open-source notices",
+      "symbol": "doc.text",
+      "sections": [
+        {
+          "title": "CloudChess source",
+          "body": "CloudChess application source and original artwork are available under GPL-3.0-or-later. Existing third-party licenses remain applicable. The matching source release includes the native engine integration, neural network, required resources and build instructions."
+        },
+        {
+          "title": "Stockfish",
+          "body": "CloudChess uses Stockfish and its neural-network evaluation data. Stockfish is copyright the Stockfish developers and is licensed under the GNU General Public License, version 3. The bundled license is available below. CloudChess uses a native bridge and separately compiled baseline and dot-product engine variants."
+        },
+        {
+          "title": "Opening and puzzle data",
+          "body": "The opening book uses the Lichess chess-openings project and public Lichess game data released under CC0. Source information and the CC0 text are bundled with the app. CloudChess is not affiliated with or endorsed by Chess.com or Lichess."
+        }
+      ],
+      "links": [
+        {
+          "title": "CloudChess source release",
+          "url": "https://github.com/kostakarathana/cloudchess/releases/tag/v1.0.0-source"
+        },
+        {
+          "title": "Stockfish project",
+          "url": "https://github.com/official-stockfish/Stockfish"
+        },
+        {
+          "title": "Lichess opening data",
+          "url": "https://github.com/lichess-org/chess-openings"
+        },
+        {
+          "title": "Lichess game database",
+          "url": "https://database.lichess.org/"
+        }
+      ]
+    }
+  ]
+}

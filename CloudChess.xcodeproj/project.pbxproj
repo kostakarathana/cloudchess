@@ -1,0 +1,443 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 56;
+	objects = {
+
+/* Begin PBXBuildFile section */
+CC5100000000000000000002 = {isa = PBXBuildFile; fileRef = CC5100000000000000000001; };
+AC1200000000000000000002 = {isa = PBXBuildFile; fileRef = AC1200000000000000000001; settings = {COMPILER_FLAGS = "-O3 -march=armv8.2-a+dotprod -DUSE_NEON_DOTPROD"; }; };
+CDA300000000000000000004 = {isa = PBXBuildFile; fileRef = CDA300000000000000000003; };
+CDA300000000000000000002 = {isa = PBXBuildFile; fileRef = CDA300000000000000000001; };
+CCA200000000000000000008 = {isa = PBXBuildFile; fileRef = CCA200000000000000000007; };
+CCA200000000000000000006 = {isa = PBXBuildFile; fileRef = CCA200000000000000000005; };
+CCA200000000000000000004 = {isa = PBXBuildFile; fileRef = CCA200000000000000000003; };
+CCA200000000000000000002 = {isa = PBXBuildFile; fileRef = CCA200000000000000000001; };
+CCC130000000000000000002 = {isa = PBXBuildFile; fileRef = CCC130000000000000000001; };
+BBA120000000000000000006 /* PuzzleCelebration.swift in Sources */ = {isa = PBXBuildFile; fileRef = BBA120000000000000000005; };
+BBA120000000000000000004 /* PuzzleCoach.swift in Sources */ = {isa = PBXBuildFile; fileRef = BBA120000000000000000003; };
+BBA120000000000000000002 /* PuzzleBridge.mm in Sources */ = {isa = PBXBuildFile; fileRef = BBA120000000000000000001; };
+        AFA110000000000000000006 /* NativeProfiles.swift in Sources */ = {isa = PBXBuildFile; fileRef = AFA110000000000000000005; };
+        AFA110000000000000000008 /* ChessBridge.mm in Sources */ = {isa = PBXBuildFile; fileRef = AFA110000000000000000007; };
+        AFA110000000000000000010 /* EngineResources in Resources */ = {isa = PBXBuildFile; fileRef = AFA110000000000000000009; };
+        AFA110000000000000000002 /* ProfileAnalysis.swift in Sources */ = {isa = PBXBuildFile; fileRef = AFA110000000000000000001; };
+		B0A4D0000000000000000010 /* PieceDragging.swift in Sources */ = {isa = PBXBuildFile; fileRef = B0A4D0000000000000000009; };
+		B0A4D0000000000000000008 /* PieceDragSpring.swift in Sources */ = {isa = PBXBuildFile; fileRef = B0A4D0000000000000000007; };
+		B0A4D0000000000000000006 /* PieceCloudEffects.swift in Sources */ = {isa = PBXBuildFile; fileRef = B0A4D0000000000000000005; };
+		B0A4D0000000000000000004 /* BoardStyle.swift in Sources */ = {isa = PBXBuildFile; fileRef = B0A4D0000000000000000003; };
+		B0A4D0000000000000000002 /* BoardGeometry.swift in Sources */ = {isa = PBXBuildFile; fileRef = B0A4D0000000000000000001; };
+		2DDE8FBCA3D80C4B80ABEB0A /* CloudAtmosphereDynamics.swift in Sources */ = {isa = PBXBuildFile; fileRef = 22E1495A2C021AFFE0334A58 /* CloudAtmosphereDynamics.swift */; };
+		2F1753D57800699BA23061F3 /* GameModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = A123FF4646CDA56224589142 /* GameModel.swift */; };
+		4E325A41F1990741B2B69517 /* FlatPieces.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6CE9117D91D3E6C8CACCD2CF /* FlatPieces.swift */; };
+		53B2125AE54BCE1D236CBF2D /* CloudSpring.swift in Sources */ = {isa = PBXBuildFile; fileRef = E48606F84D8EB1D862E52893 /* CloudSpring.swift */; };
+		550C5CCB326E3C60225E28A0 /* CloudScene.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8E41A4DF56B7B241CD5EFE77 /* CloudScene.swift */; };
+		80FAC02A0BD5812E2A00F339 /* CloudChessUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1D6574ADE4A048AA71108CF /* CloudChessUITests.swift */; };
+		85FDBCF7E8896EE9D3787782 /* CloudAtmosphere.swift in Sources */ = {isa = PBXBuildFile; fileRef = BE01C3091F9C6CB829DFBE43 /* CloudAtmosphere.swift */; };
+		CF8A4D27E1C506A7C75A76BE /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 3685E330EC5277A9DD5661C6 /* Assets.xcassets */; };
+		D156086DCE7B55BD42444BBC /* CloudVolumeShader.swift in Sources */ = {isa = PBXBuildFile; fileRef = 42D04F52ECE51FB865B8A234 /* CloudVolumeShader.swift */; };
+		E144DBC3E2B3AB14593F6348 /* CloudChessApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3A43B788153AB082F193B0F6 /* CloudChessApp.swift */; };
+		FF101CBA089FC54043726829 /* PieceSculptor.swift in Sources */ = {isa = PBXBuildFile; fileRef = 733044A18E510FEB37A7181A /* PieceSculptor.swift */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		D799BAE6088A90139B415FCC /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 98F54143AB4E86B28C3AFEE0 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 0E8A3AD980EC179856012B7E;
+			remoteInfo = CloudChess;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXFileReference section */
+CC5100000000000000000001 = {isa = PBXFileReference; lastKnownFileType = text.xml; path = CloudChess/PrivacyInfo.xcprivacy; sourceTree = SOURCE_ROOT; };
+AC1200000000000000000001 = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.objcpp; path = NativeEngine/ChessBridgeDotprod.mm; sourceTree = SOURCE_ROOT; };
+CDA300000000000000000003 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KingDominoPhysics.swift; sourceTree = "<group>"; };
+CDA300000000000000000001 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CloudChess/ModeDifficulty.swift; sourceTree = SOURCE_ROOT; };
+CCA200000000000000000007 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CloudChess/RewardDoors.swift; sourceTree = SOURCE_ROOT; };
+CCA200000000000000000005 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CloudChess/CollectionGallery.swift; sourceTree = SOURCE_ROOT; };
+CCA200000000000000000003 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CloudChess/CollectionArt.swift; sourceTree = SOURCE_ROOT; };
+CCA200000000000000000001 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CloudChess/CollectionCatalog.swift; sourceTree = SOURCE_ROOT; };
+CCC130000000000000000001 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CloudChess/ChallengeModes.swift; sourceTree = SOURCE_ROOT; };
+BBA120000000000000000005 /* PuzzleCelebration.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CloudChess/PuzzleCelebration.swift; sourceTree = SOURCE_ROOT; };
+BBA120000000000000000003 /* PuzzleCoach.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CloudChess/PuzzleCoach.swift; sourceTree = SOURCE_ROOT; };
+BBA120000000000000000001 /* PuzzleBridge.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.objcpp; path = NativeEngine/PuzzleBridge.mm; sourceTree = SOURCE_ROOT; };
+        AFA110000000000000000005 /* NativeProfiles.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CloudChess/NativeProfiles.swift; sourceTree = SOURCE_ROOT; };
+        AFA110000000000000000007 /* ChessBridge.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.objcpp; path = NativeEngine/ChessBridge.mm; sourceTree = SOURCE_ROOT; };
+        AFA110000000000000000009 /* EngineResources */ = {isa = PBXFileReference; lastKnownFileType = folder; path = CloudChess/EngineResources; sourceTree = SOURCE_ROOT; };
+        AFA110000000000000000001 /* ProfileAnalysis.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CloudChess/ProfileAnalysis.swift; sourceTree = SOURCE_ROOT; };
+		B0A4D0000000000000000009 /* PieceDragging.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PieceDragging.swift; sourceTree = "<group>"; };
+		B0A4D0000000000000000007 /* PieceDragSpring.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PieceDragSpring.swift; sourceTree = "<group>"; };
+		B0A4D0000000000000000005 /* PieceCloudEffects.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PieceCloudEffects.swift; sourceTree = "<group>"; };
+		B0A4D0000000000000000003 /* BoardStyle.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BoardStyle.swift; sourceTree = "<group>"; };
+		B0A4D0000000000000000001 /* BoardGeometry.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BoardGeometry.swift; sourceTree = "<group>"; };
+		22E1495A2C021AFFE0334A58 /* CloudAtmosphereDynamics.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CloudAtmosphereDynamics.swift; sourceTree = "<group>"; };
+		3685E330EC5277A9DD5661C6 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		3A43B788153AB082F193B0F6 /* CloudChessApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CloudChessApp.swift; sourceTree = "<group>"; };
+		42D04F52ECE51FB865B8A234 /* CloudVolumeShader.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CloudVolumeShader.swift; sourceTree = "<group>"; };
+		4A19557DC1B96C20DFA19772 /* CloudChessUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; path = CloudChessUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		6CE9117D91D3E6C8CACCD2CF /* FlatPieces.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FlatPieces.swift; sourceTree = "<group>"; };
+		733044A18E510FEB37A7181A /* PieceSculptor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PieceSculptor.swift; sourceTree = "<group>"; };
+		7D1043473D55BFA90E8530D3 /* CloudChess.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; path = CloudChess.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		8E41A4DF56B7B241CD5EFE77 /* CloudScene.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CloudScene.swift; sourceTree = "<group>"; };
+		A123FF4646CDA56224589142 /* GameModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GameModel.swift; sourceTree = "<group>"; };
+		BE01C3091F9C6CB829DFBE43 /* CloudAtmosphere.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CloudAtmosphere.swift; sourceTree = "<group>"; };
+		C1D6574ADE4A048AA71108CF /* CloudChessUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CloudChessUITests.swift; sourceTree = "<group>"; };
+		E48606F84D8EB1D862E52893 /* CloudSpring.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CloudSpring.swift; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		7561BFB015D8F536760CB671 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		482182478A3ECD4745BEA917 /* CloudChess */ = {
+			isa = PBXGroup;
+			children = (
+CC5100000000000000000001,
+CDA300000000000000000001,
+CDA300000000000000000003,
+				B0A4D0000000000000000001 /* BoardGeometry.swift */,
+				B0A4D0000000000000000003 /* BoardStyle.swift */,
+				B0A4D0000000000000000005 /* PieceCloudEffects.swift */,
+				B0A4D0000000000000000009 /* PieceDragging.swift */,
+				B0A4D0000000000000000007 /* PieceDragSpring.swift */,
+				BE01C3091F9C6CB829DFBE43 /* CloudAtmosphere.swift */,
+				22E1495A2C021AFFE0334A58 /* CloudAtmosphereDynamics.swift */,
+				3A43B788153AB082F193B0F6 /* CloudChessApp.swift */,
+				8E41A4DF56B7B241CD5EFE77 /* CloudScene.swift */,
+				E48606F84D8EB1D862E52893 /* CloudSpring.swift */,
+				42D04F52ECE51FB865B8A234 /* CloudVolumeShader.swift */,
+				6CE9117D91D3E6C8CACCD2CF /* FlatPieces.swift */,
+				A123FF4646CDA56224589142 /* GameModel.swift */,
+				733044A18E510FEB37A7181A /* PieceSculptor.swift */,
+				3685E330EC5277A9DD5661C6 /* Assets.xcassets */,
+			);
+			path = CloudChess;
+			sourceTree = "<group>";
+		};
+		8B7A6DECC0651D269EA794C7 /* CloudChessUITests */ = {
+			isa = PBXGroup;
+			children = (
+				C1D6574ADE4A048AA71108CF /* CloudChessUITests.swift */,
+			);
+			path = CloudChessUITests;
+			sourceTree = "<group>";
+		};
+		B28B7AF69320201D1CF206EB = {
+			isa = PBXGroup;
+			children = (
+				482182478A3ECD4745BEA917 /* CloudChess */,
+				8B7A6DECC0651D269EA794C7 /* CloudChessUITests */,
+				FBDC4F23F93125BBEEAE800C /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		FBDC4F23F93125BBEEAE800C /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				7D1043473D55BFA90E8530D3 /* CloudChess.app */,
+				4A19557DC1B96C20DFA19772 /* CloudChessUITests.xctest */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		0A06C5E2DA34E686D888A695 /* CloudChessUITests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = ED36A1A1F11BA70A7B3C83B7 /* Build configuration list for PBXNativeTarget "CloudChessUITests" */;
+			buildPhases = (
+				9F3002A5D69B22D357A58AA9 /* Sources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				E9FAD0C6CD43534327C0AF90 /* PBXTargetDependency */,
+			);
+			name = CloudChessUITests;
+			productName = CloudChessUITests;
+			productReference = 4A19557DC1B96C20DFA19772 /* CloudChessUITests.xctest */;
+			productType = "com.apple.product-type.bundle.ui-testing";
+		};
+		0E8A3AD980EC179856012B7E /* CloudChess */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 33FC403865EFED97DDC74CB5 /* Build configuration list for PBXNativeTarget "CloudChess" */;
+			buildPhases = (
+				BCE16DD0260827ECF338C787 /* Sources */,
+				7561BFB015D8F536760CB671 /* Frameworks */,
+				0189424A5A60FED329FA868E /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = CloudChess;
+			productName = CloudChess;
+			productReference = 7D1043473D55BFA90E8530D3 /* CloudChess.app */;
+			productType = "com.apple.product-type.application";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		98F54143AB4E86B28C3AFEE0 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = YES;
+				LastUpgradeCheck = 2660;
+			};
+			buildConfigurationList = F142A019F36D348128455B0A /* Build configuration list for PBXProject "CloudChess" */;
+			compatibilityVersion = "Xcode 14.0";
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				en,
+				Base,
+			);
+			mainGroup = B28B7AF69320201D1CF206EB;
+			productRefGroup = FBDC4F23F93125BBEEAE800C /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				0E8A3AD980EC179856012B7E /* CloudChess */,
+				0A06C5E2DA34E686D888A695 /* CloudChessUITests */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		0189424A5A60FED329FA868E /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+CC5100000000000000000002,
+				AFA110000000000000000010 /* EngineResources in Resources */,
+                CF8A4D27E1C506A7C75A76BE /* Assets.xcassets in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		9F3002A5D69B22D357A58AA9 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				80FAC02A0BD5812E2A00F339 /* CloudChessUITests.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		BCE16DD0260827ECF338C787 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				85FDBCF7E8896EE9D3787782 /* CloudAtmosphere.swift in Sources */,
+				2DDE8FBCA3D80C4B80ABEB0A /* CloudAtmosphereDynamics.swift in Sources */,
+				E144DBC3E2B3AB14593F6348 /* CloudChessApp.swift in Sources */,
+				B0A4D0000000000000000002 /* BoardGeometry.swift in Sources */,
+				B0A4D0000000000000000004 /* BoardStyle.swift in Sources */,
+				B0A4D0000000000000000006 /* PieceCloudEffects.swift in Sources */,
+				B0A4D0000000000000000010 /* PieceDragging.swift in Sources */,
+				B0A4D0000000000000000008 /* PieceDragSpring.swift in Sources */,
+				550C5CCB326E3C60225E28A0 /* CloudScene.swift in Sources */,
+				53B2125AE54BCE1D236CBF2D /* CloudSpring.swift in Sources */,
+				D156086DCE7B55BD42444BBC /* CloudVolumeShader.swift in Sources */,
+				4E325A41F1990741B2B69517 /* FlatPieces.swift in Sources */,
+				AFA110000000000000000002 /* ProfileAnalysis.swift in Sources */,
+                AFA110000000000000000006 /* NativeProfiles.swift in Sources */,
+BBA120000000000000000006 /* PuzzleCelebration.swift in Sources */,
+BBA120000000000000000004 /* PuzzleCoach.swift in Sources */,
+CCC130000000000000000002,
+CDA300000000000000000002,
+CDA300000000000000000004,
+CCA200000000000000000002,
+CCA200000000000000000008,
+CCA200000000000000000006,
+CCA200000000000000000004,
+BBA120000000000000000002 /* PuzzleBridge.mm in Sources */,
+                AFA110000000000000000008 /* ChessBridge.mm in Sources */,
+AC1200000000000000000002,
+				2F1753D57800699BA23061F3 /* GameModel.swift in Sources */,
+				FF101CBA089FC54043726829 /* PieceSculptor.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		E9FAD0C6CD43534327C0AF90 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 0E8A3AD980EC179856012B7E /* CloudChess */;
+			targetProxy = D799BAE6088A90139B415FCC /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
+/* Begin XCBuildConfiguration section */
+		5A8C91857F674E16E2724F47 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+                SWIFT_OBJC_BRIDGING_HEADER = "NativeEngine/CloudChess-Bridging-Header.h";
+                CLANG_CXX_LANGUAGE_STANDARD = "c++17";
+                CLANG_ENABLE_OBJC_ARC = YES;
+                HEADER_SEARCH_PATHS = ("$(inherited)", "$(SRCROOT)/NativeEngine/Stockfish");
+                LIBRARY_SEARCH_PATHS = ("$(inherited)", "$(SRCROOT)/NativeEngine/lib/$(PLATFORM_NAME)");
+                OTHER_LDFLAGS = ("$(inherited)", "-lStockfish", "-lStockfishDotprod", "-lc++");
+                GCC_PREPROCESSOR_DEFINITIONS = ("$(inherited)", IS_64BIT, "USE_NEON=8", USE_POPCNT, CC_DUAL_ENGINE);
+				CLANG_ENABLE_MODULES = YES;
+                ARCHS = arm64;
+                ONLY_ACTIVE_ARCH = YES;
+				CODE_SIGN_IDENTITY = "Apple Development";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = N3LD45M7N9;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				INFOPLIST_FILE = CloudChess/Info.plist;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.maroon.CloudChess;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				PROVISIONING_PROFILE_SPECIFIER = "";
+				SDKROOT = iphoneos;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
+		811CB99F7A296F7846C18A7F /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CLANG_ENABLE_MODULES = YES;
+                ARCHS = arm64;
+                ONLY_ACTIVE_ARCH = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				SDKROOT = iphoneos;
+				SWIFT_VERSION = 5.0;
+			};
+			name = Release;
+		};
+		942EEBBACD6C88CAE7F29B29 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CLANG_ENABLE_MODULES = YES;
+                ARCHS = arm64;
+                ONLY_ACTIVE_ARCH = YES;
+				CODE_SIGN_STYLE = Automatic;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.maroon.CloudChessUITests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_TARGET_NAME = CloudChess;
+			};
+			name = Release;
+		};
+		D08DD63EED508AD30D0CB0B4 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CLANG_ENABLE_MODULES = YES;
+                ARCHS = arm64;
+                ONLY_ACTIVE_ARCH = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				SDKROOT = iphoneos;
+				SWIFT_VERSION = 5.0;
+			};
+			name = Debug;
+		};
+		E9B2E96ABC5F6856F2BE79CF /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+                SWIFT_OBJC_BRIDGING_HEADER = "NativeEngine/CloudChess-Bridging-Header.h";
+                CLANG_CXX_LANGUAGE_STANDARD = "c++17";
+                CLANG_ENABLE_OBJC_ARC = YES;
+                HEADER_SEARCH_PATHS = ("$(inherited)", "$(SRCROOT)/NativeEngine/Stockfish");
+                LIBRARY_SEARCH_PATHS = ("$(inherited)", "$(SRCROOT)/NativeEngine/lib/$(PLATFORM_NAME)");
+                OTHER_LDFLAGS = ("$(inherited)", "-lStockfish", "-lStockfishDotprod", "-lc++");
+                GCC_PREPROCESSOR_DEFINITIONS = ("$(inherited)", IS_64BIT, "USE_NEON=8", USE_POPCNT, CC_DUAL_ENGINE);
+				CLANG_ENABLE_MODULES = YES;
+                ARCHS = arm64;
+                ONLY_ACTIVE_ARCH = YES;
+				CODE_SIGN_IDENTITY = "Apple Development";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = N3LD45M7N9;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				INFOPLIST_FILE = CloudChess/Info.plist;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.maroon.CloudChess;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				PROVISIONING_PROFILE_SPECIFIER = "";
+				SDKROOT = iphoneos;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		FCB48D8F88BCDB0ED9FADFD7 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CLANG_ENABLE_MODULES = YES;
+                ARCHS = arm64;
+                ONLY_ACTIVE_ARCH = YES;
+				CODE_SIGN_STYLE = Automatic;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.maroon.CloudChessUITests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_TARGET_NAME = CloudChess;
+			};
+			name = Debug;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		33FC403865EFED97DDC74CB5 /* Build configuration list for PBXNativeTarget "CloudChess" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				E9B2E96ABC5F6856F2BE79CF /* Debug */,
+				5A8C91857F674E16E2724F47 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		ED36A1A1F11BA70A7B3C83B7 /* Build configuration list for PBXNativeTarget "CloudChessUITests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				FCB48D8F88BCDB0ED9FADFD7 /* Debug */,
+				942EEBBACD6C88CAE7F29B29 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		F142A019F36D348128455B0A /* Build configuration list for PBXProject "CloudChess" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				D08DD63EED508AD30D0CB0B4 /* Debug */,
+				811CB99F7A296F7846C18A7F /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+/* End XCConfigurationList section */
+	};
+	rootObject = 98F54143AB4E86B28C3AFEE0 /* Project object */;
+}

@@ -1,0 +1,18 @@
+CloudChess
+Copyright (C) 2026 Kosta Karathanasopoulos
+
+CloudChess's application source and original artwork are released under the GNU
+General Public License, version 3 or (at your option) any later version, except
+where a component's existing license specifies otherwise. See COPYING.
+This program is distributed WITHOUT ANY WARRANTY; without even the implied
+warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
+
+Stockfish and its evaluation network: copyright the Stockfish developers,
+GNU GPL version 3. Original notices are retained in NativeEngine/Stockfish and
+CloudChess/EngineResources/Copying.txt and AUTHORS. The native bridge and the
+baseline/dot-product builds are included in the source distribution.
+
+Lichess opening and public game data: CC0. See the bundled opening-book-CC0.txt
+and opening-book-source.json. Existing third-party licenses remain applicable.
+Apple frameworks and system-provided SF Symbols are not redistributed as source
+and remain governed by Apple's terms. The unused Chess.com Neo art is excluded.

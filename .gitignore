@@ -1,0 +1,10 @@
+build*/
+DerivedData/
+NativeEngine/lib/
+CloudChess/EngineResources/
+art/
+reports/
+__pycache__/
+*.xcuserstate
+xcuserdata/
+.DS_Store
