@@ -179,53 +179,89 @@ struct UnlimitedPuzzlePanel: View {
     let close: () -> Void
     let continuePlaying: () -> Void
     @State private var manage = false
+    private let ink = Color(rgb:0x192E49)
+
     var body: some View {
-        CloudPopup(title: store.unlimited ? "Unlimited puzzles" : "Keep playing", symbol: "cloud.fill", dismiss: close) {
-            VStack(alignment: .leading, spacing: 14) {
-                if store.unlimited {
-                    Text("Your subscription is active.").font(.headline)
-                } else {
-                    Text("3 free puzzles every hour. Unlimited puzzles with CloudChess Unlimited.").font(.body)
-                    if let product = store.product { Text("\(product.displayPrice) / month").font(.title2.bold()).accessibilityIdentifier("subscription-price") }
-                    else if store.loadingProduct { ProgressView().accessibilityLabel("Loading subscription price") }
-                    if waiting {
-                        TimelineView(.periodic(from: .now, by: 10)) { _ in
-                            if let next = store.nextAvailable {
-                                Text("Next free puzzle at \(next.formatted(date: .omitted, time: .shortened)).").font(.footnote)
-                            } else { Text("Your free puzzle is ready.").font(.footnote) }
-                        }
-                    }
-                    Text("Renews monthly until canceled. Payment is charged to your Apple Account. Cancel in Settings at least 24 hours before renewal.").font(.caption).foregroundStyle(.secondary)
+        CloudPopup(title: "Keep playing", symbol: "cloud.fill", dismiss: close) {
+            TimelineView(.periodic(from: .now, by: 10)) { _ in
+                HStack(alignment: .top, spacing: 10) {
+                    tier(premium: false)
+                    tier(premium: true)
                 }
-                if let message = store.message { Text(message).font(.footnote).accessibilityIdentifier("subscription-message") }
-                HStack(spacing: 24) {
-                    Link("Privacy", destination: URL(string: "https://kostakarathana.github.io/cloudchess-support/privacy.html")!).frame(minHeight:44)
-                    Link("Terms", destination: URL(string: "https://www.apple.com/legal/internet-services/itunes/dev/stdeula/")!).frame(minHeight:44)
-                }.font(.footnote).frame(minHeight:44)
+            }
+            if let message = store.message {
+                Text(message).font(.footnote).foregroundStyle(.secondary)
+                    .padding(.top,8).dynamicTypeSize(...DynamicTypeSize.xxxLarge).accessibilityIdentifier("subscription-message")
             }
         } actions: {
-            VStack(spacing: 8) {
-                if store.unlimited {
-                    Button("Continue", action: continuePlaying).buttonStyle(CloudActionStyle()).accessibilityIdentifier("subscription-continue")
-                    Button("Manage subscription") { manage = true }.frame(minHeight:44)
-                } else {
-                    Button { Task { await store.purchase() } } label: {
-                        HStack { if store.purchasing { ProgressView().tint(.white) }; Text(store.product.map { "Subscribe · \($0.displayPrice) / month" } ?? "Subscription unavailable") }.frame(maxWidth: .infinity)
-                    }.buttonStyle(CloudActionStyle()).disabled(store.purchasing || store.product == nil || store.checking).accessibilityIdentifier("subscription-buy")
-                    HStack {
-                        Button("Restore purchases") { Task { await store.restore() } }.frame(minHeight:44).accessibilityIdentifier("subscription-restore")
-                        Spacer()
-                        Button("Retry") { Task { await store.retry() } }.frame(minHeight:44).accessibilityIdentifier("subscription-retry")
-                    }.font(.footnote).frame(minHeight:44).disabled(store.purchasing)
-                    if waiting {
-                        TimelineView(.periodic(from: .now, by: 10)) { _ in
-                            if store.canStartPuzzle { Button("Play free puzzle", action: continuePlaying).frame(minHeight:44).accessibilityIdentifier("subscription-free") }
-                        }
+            VStack(spacing: 0) {
+                if !store.unlimited {
+                    Text("Auto-renews monthly. Cancel anytime.")
+                        .font(.caption).foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                }
+                HStack(spacing: 16) {
+                    Link("Privacy", destination: URL(string: "https://kostakarathana.github.io/cloudchess-support/privacy.html")!)
+                    Link("Terms", destination: URL(string: "https://www.apple.com/legal/internet-services/itunes/dev/stdeula/")!)
+                    if store.unlimited {
+                        Button("Manage") { manage = true }.accessibilityLabel("Manage subscription")
+                    } else {
+                        Button("Restore") { Task { await store.restore() } }
+                            .disabled(store.purchasing).accessibilityLabel("Restore purchases")
+                            .accessibilityIdentifier("subscription-restore")
                     }
+                }.font(.footnote).buttonStyle(CloudPressStyle()).frame(minHeight:44)
+                if store.message != nil && !store.unlimited {
+                    Button("Try again") { Task { await store.retry() } }
+                        .font(.footnote).frame(minHeight:44).disabled(store.purchasing)
+                        .accessibilityIdentifier("subscription-retry")
                 }
             }.dynamicTypeSize(...DynamicTypeSize.xxxLarge)
         }.manageSubscriptionsSheet(isPresented: $manage)
         .task { await store.start(); if store.product == nil { await store.loadProduct() } }
         .accessibilityIdentifier("subscription-panel")
+    }
+
+    private func tier(premium: Bool) -> some View {
+        VStack(spacing: 10) {
+            Text(premium ? "Premium" : "Free").font(.headline)
+            Image(systemName: premium ? "infinity" : "cloud")
+                .font(.system(size:30,weight:.medium)).frame(height:36).accessibilityHidden(true)
+            Text(premium ? "Infinite puzzles" : "3 puzzles / hour")
+                .font(.subheadline.weight(.semibold)).frame(height:56)
+            Group {
+                if premium {
+                    if store.unlimited {
+                        Text("Active").accessibilityIdentifier("subscription-active")
+                    } else if let product=store.product {
+                        Text("\(product.displayPrice) / month").accessibilityIdentifier("subscription-price")
+                    } else if store.loadingProduct {
+                        ProgressView().accessibilityLabel("Loading subscription price")
+                    } else { Text("Unavailable") }
+                } else if waiting, let next=store.nextAvailable, !store.unlimited {
+                    Text("Refills \(next.formatted(date:.omitted,time:.shortened))")
+                } else { Text("No subscription") }
+            }.font(.caption).fixedSize(horizontal:false,vertical:true).frame(height:56)
+            Button {
+                if premium && !store.unlimited { Task { await store.purchase() } }
+                else if !premium && (!waiting || !store.canStartPuzzle) { close() }
+                else { continuePlaying() }
+            } label: {
+                HStack(spacing:5) {
+                    if premium && store.purchasing { ProgressView().tint(.white) }
+                    Text("Continue").font(.subheadline.weight(.semibold))
+                }.frame(maxWidth:.infinity,minHeight:46)
+                    .foregroundStyle(premium ? .white : ink)
+                    .background(premium ? ink : .white.opacity(0.85),in:RoundedRectangle(cornerRadius:15))
+                    .contentShape(RoundedRectangle(cornerRadius:15))
+            }.buttonStyle(CloudPressStyle())
+                .disabled(premium && !store.unlimited && (store.purchasing || store.product == nil || store.checking))
+                .accessibilityIdentifier(premium ? (store.unlimited ? "subscription-continue" : "subscription-buy") : "subscription-free")
+                .accessibilityLabel(premium ? (store.unlimited ? "Continue with Premium" : "Subscribe to Premium") : "Continue with Free")
+        }.multilineTextAlignment(.center).fixedSize(horizontal:false,vertical:true)
+            .frame(maxWidth:.infinity).padding(.horizontal,10).padding(.vertical,16)
+            .background(premium ? Color(rgb:0xD6E7F6) : .white.opacity(0.40),in:RoundedRectangle(cornerRadius:22))
+            .overlay(RoundedRectangle(cornerRadius:22).stroke(premium ? ink.opacity(0.15) : .white.opacity(0.8),lineWidth:1))
+            .dynamicTypeSize(...DynamicTypeSize.xxxLarge)
     }
 }

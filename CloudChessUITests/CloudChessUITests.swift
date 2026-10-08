@@ -17,7 +17,7 @@ final class CloudChessUITests:XCTestCase {
         XCTAssertTrue(app.staticTexts["subscription-price"].label.contains("7.99"))
         let shot=XCTAttachment(screenshot:app.screenshot());shot.name="Unlimited puzzle paywall";shot.lifetime = .keepAlways;add(shot)
         buy.tap()
-        XCTAssertTrue(app.staticTexts["Your subscription is active."].waitForExistence(timeout:20))
+        XCTAssertTrue(app.staticTexts["subscription-active"].waitForExistence(timeout:20))
         app.buttons["subscription-continue"].tap();puzzleReady(app)
         XCTAssertEqual(puzzleValues(app)["unlimited"],"1")
         // Relaunch with exhausted free quota: StoreKit restores entitlement itself.
@@ -45,7 +45,7 @@ final class CloudChessUITests:XCTestCase {
         XCTAssertFalse(app.buttons["subscription-continue"].exists)
         let transaction=try XCTUnwrap(store.allTransactions().last)
         try store.approveAskToBuyTransaction(identifier:transaction.identifier)
-        XCTAssertTrue(app.staticTexts["Your subscription is active."].waitForExistence(timeout:20))
+        XCTAssertTrue(app.staticTexts["subscription-active"].waitForExistence(timeout:20))
         try store.refundTransaction(identifier:transaction.identifier)
         XCTAssertTrue(app.buttons["subscription-buy"].waitForExistence(timeout:20))
         XCTAssertFalse(app.buttons["subscription-continue"].exists)
@@ -59,9 +59,12 @@ final class CloudChessUITests:XCTestCase {
         XCTAssertTrue(close.waitForExistence(timeout:30))
         XCTAssertTrue(close.isHittable);XCTAssertTrue(app.frame.contains(close.frame))
         XCTAssertTrue(app.buttons["subscription-restore"].isHittable)
+        XCTAssertTrue(app.buttons["subscription-free"].isHittable)
+        XCTAssertTrue(app.buttons["subscription-buy"].exists)
+        XCTAssertLessThan(app.buttons["subscription-free"].frame.midX,app.buttons["subscription-buy"].frame.midX)
         XCTAssertFalse(app.buttons["square-a1"].exists)
         let image=XCTAttachment(screenshot:app.screenshot());image.name="Accessible subscription panel";image.lifetime = .keepAlways;add(image)
-        close.tap();XCTAssertTrue(app.buttons["Continue playing"].exists)
+        app.buttons["subscription-free"].tap();XCTAssertTrue(app.buttons["Continue playing"].exists)
         app.buttons["Continue playing"].tap();XCTAssertTrue(close.exists)
     }
 
