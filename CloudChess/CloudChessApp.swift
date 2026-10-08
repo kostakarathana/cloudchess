@@ -8,6 +8,7 @@ import SceneKit
 /// Challenge instructions are the only prose in the play scene.
 struct CloudChessView:View {
     @StateObject private var game=GameModel()
+    @ObservedObject private var subscription=SubscriptionStore.shared
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.dynamicTypeSize) private var textSize
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -17,7 +18,7 @@ struct CloudChessView:View {
     @State private var scoreEmphasis=false
     @State private var displayedScoreEvent=0
     private let ink=Color(red:0.10,green:0.18,blue:0.29)
-    private var modalVisible:Bool {settings || showingProfile || showingLegal || game.showInfo || game.showReturn || game.showSkip || game.showUndo || game.showHint || !game.promotion.isEmpty || game.phase=="error"}
+    private var modalVisible:Bool {game.showSubscription || settings || showingProfile || showingLegal || game.showInfo || game.showReturn || game.showSkip || game.showUndo || game.showHint || !game.promotion.isEmpty || game.phase=="error"}
     private var sceneryPaused:Bool {modalVisible}
     var body:some View {
         GeometryReader { geo in
@@ -100,6 +101,12 @@ struct CloudChessView:View {
                     ).transition(.opacity).zIndex(10)
                 }
                 if game.showSkip || game.showUndo || game.showHint {confirmationPanel.zIndex(15)}
+                if game.showSubscription {
+                    UnlimitedPuzzlePanel(store:subscription,waiting:game.waitingForAccess,close:{game.showSubscription=false},continuePlaying:{Task{await game.continueWithAccess()}}).zIndex(20)
+                }
+                if game.waitingForAccess && !game.showSubscription {
+                    VStack { Spacer();Button("Continue playing") {game.showSubscription=true}.buttonStyle(CloudActionStyle()).padding(.bottom,90) }.zIndex(4)
+                }
                 }.accessibilityHidden(game.presentingReward).allowsHitTesting(!game.presentingReward)
                 #if DEBUG
                 if ProcessInfo.processInfo.arguments.contains("--uitesting") {
@@ -113,7 +120,7 @@ struct CloudChessView:View {
         .task{game.configureMotion(reduced:reduceMotion);await game.start()}
         // Switching between cards remains one overlay transaction and one save.
         .onChange(of:modalVisible || game.replayActive){_,_ in updateOverlay()}
-        .onChange(of:scenePhase){_,phase in game.setActive(phase == .active);if phase == .background {settings=false;showingProfile=false;showingLegal=false;game.showSkip=false;game.showUndo=false;game.showHint=false;game.promotion=[];game.didEnterBackground()};if phase != .active {game.world.onCancelDrag?();Task{await OnDeviceProfiles.shared.pause()}}}
+        .onChange(of:scenePhase){_,phase in game.setActive(phase == .active);if phase == .active {Task{await subscription.refreshEntitlements()}};if phase == .background {settings=false;showingProfile=false;showingLegal=false;game.showSkip=false;game.showUndo=false;game.showHint=false;game.promotion=[];game.didEnterBackground()};if phase != .active {game.world.onCancelDrag?();Task{await OnDeviceProfiles.shared.pause()}}}
         .onChange(of:game.motion){_,_ in game.configureMotion(reduced:reduceMotion)}
         .onChange(of:reduceMotion){_,_ in game.configureMotion(reduced:reduceMotion)}
     }
@@ -220,6 +227,7 @@ struct CloudChessView:View {
     private var settingsPanel:some View {
         CloudPopup(title:"Settings",symbol:"slider.horizontal.3",dismiss:{settings=false}) {
             VStack(spacing:10) {
+                menuRow(subscription.unlimited ? "Unlimited puzzles":"Get unlimited puzzles",symbol:"cloud.fill") {settings=false;game.showSubscription=true}
                 menuRow("Profile analysis",symbol:"person.crop.circle") {settings=false;showingProfile=true}
                 menuRow("Privacy & support",symbol:"hand.raised") {settings=false;showingLegal=true}
                 Divider().padding(.vertical,4)
@@ -382,7 +390,7 @@ struct ChallengeIntermission:View {
                             if returning {
                                 Text(Int(score).formatted()).font(.system(size:42,weight:.semibold,design:.rounded)).monospacedDigit().minimumScaleFactor(0.65).lineLimit(1).accessibilityIdentifier("return-score")
                                 Text("Continue with your current score?").font(.system(size:20,weight:.medium,design:.rounded))
-                                Text("You'll start with a fresh puzzle.").font(.system(size:16,design:.rounded)).foregroundStyle(ink.opacity(0.65))
+                                Text("Your current puzzle is ready to continue.").font(.system(size:16,design:.rounded)).foregroundStyle(ink.opacity(0.65))
                             } else {
                                 Text(title).font(.title2.weight(.semibold))
                                 if rewardMultiplier>1 {Text("\(rewardMultiplier.formatted())× puzzle points").font(.system(size:15,weight:.semibold,design:.rounded)).padding(.horizontal,16).padding(.vertical,8).background(.white.opacity(0.65),in:Capsule()).accessibilityIdentifier("long-puzzle-reward")}

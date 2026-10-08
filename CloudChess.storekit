@@ -1,0 +1,53 @@
+{
+  "identifier": "015cefe9-7f83-43cf-9d94-d85792f0dcdc",
+  "nonRenewingSubscriptions": [],
+  "products": [],
+  "settings": {
+    "_applicationInternalID": "6820343811",
+    "_developerTeamID": "N3LD45M7N9",
+    "_failTransactionsEnabled": false,
+    "_locale": "en_US",
+    "_storefront": "USA",
+    "_storeKitErrors": []
+  },
+  "subscriptionGroups": [
+    {
+      "id": "22452898",
+      "localizations": [
+        {
+          "description": "Unlimited chess puzzles",
+          "displayName": "CloudChess Unlimited",
+          "locale": "en_US"
+        }
+      ],
+      "name": "CloudChess Unlimited",
+      "subscriptions": [
+        {
+          "adHocOffers": [],
+          "codeOffers": [],
+          "displayPrice": "7.99",
+          "familyShareable": false,
+          "groupNumber": 1,
+          "internalID": "6820353989",
+          "introductoryOffer": null,
+          "localizations": [
+            {
+              "description": "Unlimited adaptive chess puzzles, every day.",
+              "displayName": "CloudChess Unlimited",
+              "locale": "en_US"
+            }
+          ],
+          "productID": "com.maroon.CloudChess.unlimited.monthly",
+          "recurringSubscriptionPeriod": "P1M",
+          "referenceName": "CloudChess Unlimited Monthly",
+          "subscriptionGroupID": "22452898",
+          "type": "RecurringSubscription"
+        }
+      ]
+    }
+  ],
+  "version": {
+    "major": 3,
+    "minor": 0
+  }
+}

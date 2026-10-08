@@ -9,6 +9,29 @@ struct PositionState:Codable {
 }
 
 @MainActor final class GameModel:ObservableObject {
+    let subscription = SubscriptionStore.shared
+    @Published var showSubscription = false
+    @Published private(set) var waitingForAccess = false
+    private func accessForNextPuzzle() async -> Bool {
+        await subscription.start()
+        guard subscription.canStartPuzzle else {
+            waitingForAccess=true;showSubscription=true;stopPreparation();pauseClock()
+            isGenerating=false;phase="limited";return false
+        }
+        waitingForAccess=false;return true
+    }
+    func continueWithAccess() async {
+        guard !busy else { return }
+        guard waitingForAccess else { showSubscription=false;return }
+        guard await accessForNextPuzzle() else { return }
+        showSubscription=false;showReturn=false;isGenerating=true;generationStep=0;generationStartedAt=ProcessInfo.processInfo.systemUptime;await start()
+    }
+    private func admitCurrentPuzzle() async throws {
+        guard let session=coach.session,session.requiresAdmission==true else { return }
+        try subscription.admit(session:session.id)
+        coach.session?.requiresAdmission=false
+        try await save()
+    }
     static let initialFEN="8/8/8/8/8/8/8/8 w - - 0 1"
     @Published var state=PositionState(fen:initialFEN,moves:[],san:[],legal:[],turn:"white",check:false,result:nil,capturedWhite:[],capturedBlack:[],lastMove:nil)
     @Published private(set) var dimensions=BoardDimensions.standard
@@ -92,6 +115,7 @@ struct PositionState:Codable {
         #endif
     }
     private func finishGeneration() async throws {
+        try await admitCurrentPuzzle()
         // Upload meshes/materials while the loader or journey still covers the
         // board, instead of letting its first visible frame perform that work.
         await world.prepareForDisplay?()
@@ -121,6 +145,7 @@ struct PositionState:Codable {
         generationFullMilliseconds=Int((ProcessInfo.processInfo.systemUptime-generationStartedAt)*1000)
     }
     private func cloudJourney() async throws {
+        guard await accessForNextPuzzle() else { return }
         closeReplay();world.onCancelDrag?();world.moveQuality.clear()
         journeyClouds.setTheme(board:collection.selectedBoard,pieces:collection.selectedPieces)
         journeyClouds.setBoardFootprint(.zero)
@@ -424,7 +449,7 @@ struct PositionState:Codable {
     var remaining:Int {coach.session?.recorded==true ? 0:max(0,(puzzle?.solverMoves ?? 1)-(state.moves.count+1)/2)}
     var diagnostic:String {
         "generationWorkMs:\(generationWorkMilliseconds),generationFullMs:\(generationFullMilliseconds),errorDetail:\((error ?? "").replacingOccurrences(of:",",with:";").replacingOccurrences(of:"\n",with:" ")),searchExecuted:\(NativeChess.searchMetrics["executed"] ?? 0),searchJoined:\(NativeChess.searchMetrics["joined"] ?? 0),searchPreserved:\(NativeChess.searchMetrics["preserved"] ?? 0),lastJourneyMs:\(Int(lastJourneyDuration*1000)),journeyFallbacks:\(journeyFallbacks),hintMarks:\(world.marks.childNodes.count),boardMatches:\(world.symbols==CloudScene.decode(state.fen).filter{dimensions.position($0.key) != nil} ? 1:0),journey:\(journeyActive ? 1:0),journeyFallback:\(journeyFallback ? 1:0),replay:\(replayActive ? 1:0),replayIndex:\(replayIndex),replayCount:\(replayCount),hintStage:\(coach.session?.hintStage ?? 0),hintDiscounts:\(coach.session?.hintDiscounts ?? 0),moveGrade:\(world.moveQuality.lastQuality),gradeEvents:\(world.moveQuality.events),gradeSquare:\(world.moveQuality.square),judgmentAnswer:\(puzzle?.judgment?.verdict.rawValue ?? ""),blunderPly:\(coach.session?.blunderPly ?? -1),blunderProgress:\(blunderProgress),challengeLevel:\(Int(coach.challengeLevel(challengeKind))),opponent:\(Int(coach.session?.opponentElo ?? 0)),modeAbility:\(Int(coach.modeAbility(challengeKind))),targetRating:\(Int(coach.targetRating(for:challengeKind))),scoreEvents:\(scoreFeedbackID),scoreDirection:\(scoreDirection),mistakeFeedback:\(mistakeFeedbackCount),outcomeHaptics:\(outcomeHapticCount),evaluating:\(evaluationActivity == nil ? 0:1)," +
-        "hearts:\(coach.remainingHearts),best:\(Int(coach.scoring?.best ?? 0)),generating:\(isGenerating ? 1:0),generationStep:\(generationStep),contents:\(collection.pending?.shards.count ?? 0),undos:\(coach.session?.undoCount ?? 0),reward:\(Int(puzzleReward))," +
+        "freeRemaining:\(subscription.remaining),unlimited:\(subscription.unlimited ? 1:0),hearts:\(coach.remainingHearts),best:\(Int(coach.scoring?.best ?? 0)),generating:\(isGenerating ? 1:0),generationStep:\(generationStep),contents:\(collection.pending?.shards.count ?? 0),undos:\(coach.session?.undoCount ?? 0),reward:\(Int(puzzleReward))," +
         "lastTurnMs:\(lastTurnMilliseconds),preparedReplyUsed:\(preparedReplyUsed),preparedReplies:\(preparedReplies.count),preparedMoves:\(preparedMoves),preparedMoveUsed:\(preparedMoveUsed),preparedReady:\(preparedReady),preparedUsed:\(preparedUsed),pendingMove:\(pendingMove ?? ""),visibleSquares:\(world.symbols.keys.sorted().joined(separator:"|")),rewardPicks:\(collection.pending?.choices.count ?? 0),rewardChosen:\((collection.pending?.choices ?? []).map(String.init).joined(separator:"|")),rewardOwned:\(collection.quantities.values.reduce(0,+)),profileSaved:\(UserDefaults(suiteName:"com.maroon.CloudChess.profile-tests")!.object(forKey:"cloudchess.profileLink")==nil ? 0:1),profileFile:\(FileManager.default.fileExists(atPath:FileManager.default.urls(for:.applicationSupportDirectory,in:.userDomainMask)[0].appendingPathComponent("CloudChess/profiles.sqlite3").path) ? 1:0),motion:\(motion ? 1:0),boardTheme:\(collection.selectedBoard),pieceTheme:\(collection.selectedPieces),ownedBoards:\(collection.masks.count),collectionSolved:\(collection.successes),rewardBoard:\(collection.pending == nil ? 0:1),winning:\((guide["winning"] as? [String] ?? []).joined(separator:"|")),instructionType:\(instructionType),revealed:\(boardRevealed ? 1:0),kind:\(challengeKind.rawValue),cp:\(Int(coach.session?.evaluation ?? 0)),score:\(Int(liveScore)),selected:\(selected ?? ""),moves:\(state.moves.count),error:\(error == nil ? 0:1),itemRating:\(Int(puzzle?.rating ?? 0)),difficulty:\(puzzle?.difficultyVersion ?? "legacy"),side:\(solverWhite ? "white":"black"),phase:\(phase),ready:\(!busy && phase=="playing" && !showReturn ? 1:0),completed:\(coach.total),mistakes:\(coach.session?.mistakes ?? 0),hints:\(coach.session?.hints ?? 0),rating:\(Int(coach.ability.mean)),id:\(puzzle?.id ?? ""),next:\((guide["line"] as? [String])?.first ?? ""),legal:\(state.legal.joined(separator:"|")),confetti:\(world.celebration.count),bursts:\(world.celebration.bursts)"
     }
     init() {
@@ -552,6 +577,7 @@ struct PositionState:Codable {
         }
     }
     func start() async {
+        await subscription.start()
         #if DEBUG
         if testing,ProcessInfo.processInfo.arguments.contains("--smoothness-audit"),smoothnessAudit==nil {
             smoothnessAudit=MainThreadPulseAudit { [weak self] in
@@ -597,6 +623,7 @@ struct PositionState:Codable {
                 coach.session?.puzzle=measured;try await save()
             }
             if let s=coach.session,!s.recorded {
+                try await admitCurrentPuzzle()
                 let response=try await NativeChess.call(s.puzzle.request(moves:s.moves))
                 await prepareScene(response);apply(response);connected=true;error=nil
                 if s.puzzle.kind != .tactics {
@@ -614,6 +641,7 @@ struct PositionState:Codable {
     private func failure(_ message:String)->NSError {NSError(domain:"CloudChess.Puzzle",code:1,userInfo:[NSLocalizedDescriptionKey:message])}
     private func wait(_ seconds:Double) async throws {try await Task.sleep(nanoseconds:UInt64(seconds*1_000_000_000))}
     private func nextPuzzle() async throws {
+        guard await accessForNextPuzzle() else { return }
         async let sharedAssets:Void = CollectionArt.prepareShared(board:displayedBoard,pieces:displayedPieces)
         try await generateNextPuzzle()
         await sharedAssets
@@ -672,6 +700,7 @@ struct PositionState:Codable {
         }
         var lastError:Error=failure("No certified puzzle available")
         for p in candidates {
+            var delivering=false
             do {
                 var generated=p
                 var certificate:[String:Any]?
@@ -702,10 +731,10 @@ struct PositionState:Codable {
                 generated.tags=certified["tags"] as? [String] ?? p.tags
                 generated.line=certified["line"] as? [String] ?? p.line
                 generated.nodes=certified["nodes"] as? Int ?? p.nodes
-                coach.begin(generated);try await save();guide=certified;await prepareScene(certified);apply(certified);connected=true;error=nil
+                delivering=true;coach.begin(generated);try await save();guide=certified;await prepareScene(certified);apply(certified);connected=true;error=nil
                 await generationProgress(9);try await finishGeneration()
                 phase="playing";introduce();enterBoard();try await wait(0.02);return
-            } catch {lastError=error}
+            } catch {if delivering {throw error};lastError=error}
         }
         throw lastError
     }
@@ -978,7 +1007,7 @@ struct PositionState:Codable {
     }
     func continueAfterReturn() async {
         guard !busy else{return}
-        showReturn=false;await replaceCurrentPuzzle()
+        showReturn=false;isGenerating=true;generationStep=0;generationStartedAt=ProcessInfo.processInfo.systemUptime;await start()
     }
     private func replaceCurrentPuzzle(instructionType:String?=nil) async {
         pauseClock();busy=true;defer{busy=false;resumeClock()}

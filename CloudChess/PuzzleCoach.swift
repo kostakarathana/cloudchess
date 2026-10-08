@@ -125,6 +125,7 @@ struct PuzzleAttempt:Codable {
     var succeeded:Bool?
 }
 struct PuzzleSession:Codable {
+    var requiresAdmission:Bool?
     var id=UUID().uuidString
     var puzzle:TrainingPuzzle
     var moves:[String]=[]
@@ -415,7 +416,7 @@ struct AdaptivePuzzleCoach:Codable {
         recentPuzzleKeys=Array(((recentPuzzleKeys ?? seen.suffix(3).map{PuzzleVariety.legacyKeys($0)})+[p.repeatKeys.sorted()]).suffix(3))
         recentChallengeKinds=Array(((recentChallengeKinds ?? [])+[p.kind]).suffix(12))
         if p.kind == .whosWinning {judgmentDraws=(judgmentDraws ?? 0)+1}
-        session=PuzzleSession(puzzle:p);session?.reattempt=seen.contains(p.id);session?.evaluation=p.initialEvaluation
+        session=PuzzleSession(puzzle:p);session?.requiresAdmission=true;session?.reattempt=seen.contains(p.id);session?.evaluation=p.initialEvaluation
         let opponent=p.calibrationOpponent ?? opponentRating(for:p.kind)
         session?.opponentElo=opponent
         if !p.kind.usesHearts {

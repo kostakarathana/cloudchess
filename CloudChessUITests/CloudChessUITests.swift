@@ -1,6 +1,97 @@
 import XCTest
 import UIKit
+import StoreKitTest
 final class CloudChessUITests:XCTestCase {
+    @MainActor func testSubscriptionPurchaseRestoreAndRevocation() throws {
+        continueAfterFailure=false
+        let store=try SKTestSession(configurationFileNamed:"CloudChess")
+        store.resetToDefaultState();store.clearTransactions();store.disableDialogs=true
+        defer {store.clearTransactions()}
+        let app=XCUIApplication()
+        app.launchArguments=["--uitesting","--monetization-testing","--quota-exhausted","--reduced-motion"]
+        app.launch()
+        let buy=app.buttons["subscription-buy"]
+        XCTAssertTrue(buy.waitForExistence(timeout:45))
+        let priced=XCTNSPredicateExpectation(predicate:NSPredicate(format:"enabled == true"),object:buy)
+        XCTAssertEqual(XCTWaiter.wait(for:[priced],timeout:20),.completed)
+        XCTAssertTrue(app.staticTexts["subscription-price"].label.contains("7.99"))
+        let shot=XCTAttachment(screenshot:app.screenshot());shot.name="Unlimited puzzle paywall";shot.lifetime = .keepAlways;add(shot)
+        buy.tap()
+        XCTAssertTrue(app.staticTexts["Your subscription is active."].waitForExistence(timeout:20))
+        app.buttons["subscription-continue"].tap();puzzleReady(app)
+        XCTAssertEqual(puzzleValues(app)["unlimited"],"1")
+        // Relaunch with exhausted free quota: StoreKit restores entitlement itself.
+        app.terminate();app.launchArguments += ["--preserve-allowance","--preserve-coach"]
+        app.launch();puzzleReady(app)
+        XCTAssertEqual(puzzleValues(app)["unlimited"],"1")
+        app.buttons["Settings"].tap();app.buttons["Unlimited puzzles"].tap()
+        try store.expireSubscription(productIdentifier:"com.maroon.CloudChess.unlimited.monthly")
+        XCTAssertTrue(app.buttons["subscription-restore"].waitForExistence(timeout:20))
+        app.buttons["subscription-restore"].tap()
+        XCTAssertTrue(app.staticTexts["No active subscription was found for this Apple Account."].waitForExistence(timeout:20))
+    }
+    @MainActor func testSubscriptionPendingDoesNotUnlock() throws {
+        continueAfterFailure=false
+        let store=try SKTestSession(configurationFileNamed:"CloudChess")
+        store.resetToDefaultState();store.clearTransactions();store.disableDialogs=true;store.askToBuyEnabled=true
+        defer {store.clearTransactions()}
+        let app=XCUIApplication();app.launchArguments=["--uitesting","--monetization-testing","--quota-exhausted","--reduced-motion"]
+        app.launch();let buy=app.buttons["subscription-buy"]
+        XCTAssertTrue(buy.waitForExistence(timeout:45))
+        XCTAssertEqual(XCTWaiter.wait(for:[XCTNSPredicateExpectation(predicate:NSPredicate(format:"enabled == true"),object:buy)],timeout:20),.completed)
+        buy.tap()
+        XCTAssertTrue(app.staticTexts["subscription-message"].waitForExistence(timeout:10))
+        XCTAssertTrue(app.staticTexts["subscription-message"].label.contains("approval"))
+        XCTAssertFalse(app.buttons["subscription-continue"].exists)
+        let transaction=try XCTUnwrap(store.allTransactions().last)
+        try store.approveAskToBuyTransaction(identifier:transaction.identifier)
+        XCTAssertTrue(app.staticTexts["Your subscription is active."].waitForExistence(timeout:20))
+        try store.refundTransaction(identifier:transaction.identifier)
+        XCTAssertTrue(app.buttons["subscription-buy"].waitForExistence(timeout:20))
+        XCTAssertFalse(app.buttons["subscription-continue"].exists)
+    }
+    @MainActor func testSubscriptionLargeTextAndDismissal() throws {
+        continueAfterFailure=false
+        let app=XCUIApplication()
+        app.launchArguments=["--uitesting","--monetization-testing","--quota-exhausted","--reduced-motion","-UIPreferredContentSizeCategoryName","UICTContentSizeCategoryAccessibilityXXXL"]
+        app.launch()
+        let close=app.buttons["Close keep playing"]
+        XCTAssertTrue(close.waitForExistence(timeout:30))
+        XCTAssertTrue(close.isHittable);XCTAssertTrue(app.frame.contains(close.frame))
+        XCTAssertTrue(app.buttons["subscription-restore"].isHittable)
+        XCTAssertFalse(app.buttons["square-a1"].exists)
+        let image=XCTAttachment(screenshot:app.screenshot());image.name="Accessible subscription panel";image.lifetime = .keepAlways;add(image)
+        close.tap();XCTAssertTrue(app.buttons["Continue playing"].exists)
+        app.buttons["Continue playing"].tap();XCTAssertTrue(close.exists)
+    }
+
+    @MainActor func testThreePuzzlesThenPaywallAndResume() throws {
+        continueAfterFailure=false
+        let store=try SKTestSession(configurationFileNamed:"CloudChess")
+        store.resetToDefaultState();store.clearTransactions();store.disableDialogs=true
+        let app=XCUIApplication();app.launchArguments=["--uitesting","--monetization-testing","--board=6x6","--reduced-motion"]
+        app.launch();puzzleReady(app)
+        XCTAssertEqual(puzzleValues(app)["freeRemaining"],"2")
+        // Reopening a saved board never uses a second slot.
+        let id=puzzleValues(app)["id"]
+        app.terminate();app.launchArguments += ["--preserve-allowance","--preserve-coach"]
+        app.launch();puzzleReady(app)
+        XCTAssertEqual(puzzleValues(app)["id"],id)
+        XCTAssertEqual(puzzleValues(app)["freeRemaining"],"2")
+        for remaining in [1,0] {
+            app.buttons["Skip puzzle"].tap();app.buttons["confirm-action"].tap();puzzleReady(app)
+            XCTAssertEqual(puzzleValues(app)["freeRemaining"],String(remaining))
+        }
+        app.buttons["Skip puzzle"].tap();app.buttons["confirm-action"].tap()
+        XCTAssertTrue(app.buttons["subscription-buy"].waitForExistence(timeout:15))
+        XCTAssertEqual(puzzleValues(app)["freeRemaining"],"0")
+        XCTAssertFalse(app.buttons["square-a1"].exists)
+        app.buttons["Close keep playing"].tap()
+        XCTAssertTrue(app.buttons["Continue playing"].exists)
+        app.buttons["Continue playing"].tap()
+        XCTAssertTrue(app.buttons["subscription-restore"].exists)
+    }
+
     func testPrivacySupportAndLicensePanels() throws {
         continueAfterFailure=false
         let app=XCUIApplication();app.launchArguments=["--uitesting","--board=6x6","--puzzle-mate=2","--reduced-motion"]
@@ -549,7 +640,7 @@ final class CloudChessUITests:XCTestCase {
         XCTAssertEqual(fresh["completed"],"0","Reading is not a failed chess attempt")
         XCTAssertEqual(fresh["error"],"0")
     }
-    func testScorePausesAwayAndReturnsWithFreshPuzzle() throws {
+    func testScorePausesAwayAndResumesAdmittedPuzzle() throws {
         continueAfterFailure=false
         let app=XCUIApplication();app.launchArguments=["--uitesting","--board=6x6","--puzzle-mate=1","--reduced-motion","--score=100000"];app.launch();puzzleReady(app)
         let old=puzzleValues(app)
@@ -561,7 +652,7 @@ final class CloudChessUITests:XCTestCase {
         let shot=XCTAttachment(screenshot:app.screenshot());shot.name="Return with frozen score";shot.lifetime = .keepAlways;add(shot)
         app.buttons["continue-session"].tap();puzzleReady(app)
         let next=puzzleValues(app)
-        XCTAssertNotEqual(next["id"],old["id"]);XCTAssertEqual(next["instructionType"],old["instructionType"])
+        XCTAssertEqual(next["id"],old["id"]);XCTAssertEqual(next["instructionType"],old["instructionType"])
         XCTAssertFalse(app.buttons["acknowledge-instructions"].exists)
         XCTAssertEqual(next["score"],score)
         XCTAssertEqual(next["completed"],"0")
@@ -570,7 +661,7 @@ final class CloudChessUITests:XCTestCase {
         let restored=puzzleValues(app)["score"]
         Thread.sleep(forTimeInterval:2);XCTAssertEqual(puzzleValues(app)["score"],restored)
         app.buttons["continue-session"].tap();puzzleReady(app)
-        XCTAssertNotEqual(puzzleValues(app)["id"],next["id"])
+        XCTAssertEqual(puzzleValues(app)["id"],next["id"])
         XCTAssertEqual(puzzleValues(app)["error"],"0")
     }
     func testPuzzleScopedHeartsAndPenalties() throws {

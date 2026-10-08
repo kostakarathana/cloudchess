@@ -1,0 +1,34 @@
+{
+  "configurations": [
+    {
+      "id": "6D7D250C-9263-47ED-AFE6-89B0DDC467E2",
+      "name": "StoreKit",
+      "options": {}
+    }
+  ],
+  "defaultOptions": {
+    "storeKitConfigurationFilePath": "container:CloudChess.storekit",
+    "targetForVariableExpansion": {
+      "containerPath": "container:CloudChess.xcodeproj",
+      "identifier": "0E8A3AD980EC179856012B7E",
+      "name": "CloudChess"
+    }
+  },
+  "testTargets": [
+    {
+      "selectedTests": [
+        "CloudChessUITests/testSubscriptionPendingDoesNotUnlock()",
+        "CloudChessUITests/testSubscriptionPurchaseRestoreAndRevocation()",
+        "CloudChessUITests/testThreePuzzlesThenPaywallAndResume()",
+        "CloudChessUITests/testSubscriptionLargeTextAndDismissal()",
+        "CloudChessUITests/testScorePausesAwayAndResumesAdmittedPuzzle()"
+      ],
+      "target": {
+        "containerPath": "container:CloudChess.xcodeproj",
+        "identifier": "0A06C5E2DA34E686D888A695",
+        "name": "CloudChessUITests"
+      }
+    }
+  ],
+  "version": 1
+}

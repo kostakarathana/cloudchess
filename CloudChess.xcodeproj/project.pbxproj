@@ -37,6 +37,9 @@
 		D156086DCE7B55BD42444BBC /* CloudVolumeShader.swift in Sources */ = {isa = PBXBuildFile; fileRef = 42D04F52ECE51FB865B8A234 /* CloudVolumeShader.swift */; };
 		E144DBC3E2B3AB14593F6348 /* CloudChessApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3A43B788153AB082F193B0F6 /* CloudChessApp.swift */; };
 		FF101CBA089FC54043726829 /* PieceSculptor.swift in Sources */ = {isa = PBXBuildFile; fileRef = 733044A18E510FEB37A7181A /* PieceSculptor.swift */; };
+		DD7700000000000000000002 /* PuzzleAllowance.swift in Sources */ = {isa = PBXBuildFile; fileRef = DD7700000000000000000001; };
+		DD7700000000000000000004 /* SubscriptionStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = DD7700000000000000000003; };
+		DD7700000000000000000011 /* CloudChess.storekit in Resources */ = {isa = PBXBuildFile; fileRef = DD7700000000000000000010; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -82,6 +85,9 @@
 		CDA300000000000000000001 /* CloudChess/ModeDifficulty.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CloudChess/ModeDifficulty.swift; sourceTree = SOURCE_ROOT; };
 		CDA300000000000000000003 /* KingDominoPhysics.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KingDominoPhysics.swift; sourceTree = "<group>"; };
 		E48606F84D8EB1D862E52893 /* CloudSpring.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CloudSpring.swift; sourceTree = "<group>"; };
+		DD7700000000000000000001 /* PuzzleAllowance.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PuzzleAllowance.swift; sourceTree = "<group>"; };
+		DD7700000000000000000003 /* SubscriptionStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SubscriptionStore.swift; sourceTree = "<group>"; };
+		DD7700000000000000000010 /* CloudChess.storekit */ = {isa = PBXFileReference; lastKnownFileType = text; path = CloudChess.storekit; sourceTree = SOURCE_ROOT; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -131,6 +137,8 @@
 				E48606F84D8EB1D862E52893 /* CloudSpring.swift */,
 				42D04F52ECE51FB865B8A234 /* CloudVolumeShader.swift */,
 				6CE9117D91D3E6C8CACCD2CF /* FlatPieces.swift */,
+				DD7700000000000000000001 /* PuzzleAllowance.swift */,
+				DD7700000000000000000003 /* SubscriptionStore.swift */,
 				A123FF4646CDA56224589142 /* GameModel.swift */,
 				733044A18E510FEB37A7181A /* PieceSculptor.swift */,
 				3685E330EC5277A9DD5661C6 /* Assets.xcassets */,
@@ -142,6 +150,7 @@
 			isa = PBXGroup;
 			children = (
 				C1D6574ADE4A048AA71108CF /* CloudChessUITests.swift */,
+				DD7700000000000000000010 /* CloudChess.storekit */,
 			);
 			path = CloudChessUITests;
 			sourceTree = "<group>";
@@ -173,6 +182,7 @@
 			buildConfigurationList = ED36A1A1F11BA70A7B3C83B7 /* Build configuration list for PBXNativeTarget "CloudChessUITests" */;
 			buildPhases = (
 				9F3002A5D69B22D357A58AA9 /* Sources */,
+				DD7700000000000000000012 /* Resources */,
 			);
 			buildRules = (
 			);
@@ -240,6 +250,7 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		DD7700000000000000000012 /* Resources */ = {isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (DD7700000000000000000011,); runOnlyForDeploymentPostprocessing = 0; };
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
@@ -279,6 +290,8 @@
 				BBA120000000000000000002 /* NativeEngine/PuzzleBridge.mm in Sources */,
 				AFA110000000000000000008 /* NativeEngine/ChessBridge.mm in Sources */,
 				AC1200000000000000000002 /* NativeEngine/ChessBridgeDotprod.mm in Sources */,
+				DD7700000000000000000002 /* PuzzleAllowance.swift in Sources */,
+				DD7700000000000000000004 /* SubscriptionStore.swift in Sources */,
 				2F1753D57800699BA23061F3 /* GameModel.swift in Sources */,
 				FF101CBA089FC54043726829 /* PieceSculptor.swift in Sources */,
 			);
@@ -305,7 +318,7 @@
 				CLANG_ENABLE_OBJC_ARC = YES;
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 2;
+				CURRENT_PROJECT_VERSION = 3;
 				DEVELOPMENT_TEAM = N3LD45M7N9;
 				ENABLE_USER_SCRIPT_SANDBOXING = YES;
 				GCC_PREPROCESSOR_DEFINITIONS = (
@@ -396,7 +409,7 @@
 				CLANG_ENABLE_OBJC_ARC = YES;
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 2;
+				CURRENT_PROJECT_VERSION = 3;
 				DEVELOPMENT_TEAM = N3LD45M7N9;
 				ENABLE_USER_SCRIPT_SANDBOXING = YES;
 				GCC_PREPROCESSOR_DEFINITIONS = (
