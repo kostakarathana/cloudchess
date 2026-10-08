@@ -308,7 +308,7 @@ struct PositionState:Codable {
                 var selector=forecast
                 let predicted=selector.selectChallengeKind(personalAvailable:hasPersonal)
                 let selectionSnapshot=selector
-                var kinds=[predicted]+[ChallengeKind.tactics,.opening,.finish,.tenMoves,.blunderPunish,.whosWinning].filter{$0 != predicted}
+                var kinds=[predicted]
                 kinds.removeAll{ready.contains($0) || $0 == .personal}
                 for kind in kinds {
                     guard !Task.isCancelled,self.preparationToken==token,epoch==CCBackgroundEpoch() else{break}
@@ -373,46 +373,10 @@ struct PositionState:Codable {
         return ready
     }
     @Published var coach=AdaptivePuzzleCoach()
-    var presentingReward:Bool {collection.pending != nil && phase=="reward"}
-    var collection:CollectionProgress {coach.collection ?? CollectionProgress()}
-    struct SkinPreview {let kind:CollectibleKind;let theme:Int}
-    @Published var skinPreview:SkinPreview?
-    var displayedPieces:Int {skinPreview?.kind == .pieces ? skinPreview!.theme:collection.selectedPieces}
-    func previewCollection(_ kind:CollectibleKind,theme:Int) {
-        guard collection.unlocked(kind,theme) else{return}
-        skinPreview=SkinPreview(kind:kind,theme:theme)
-        world.setCollection(board:kind == .board ? theme:collection.selectedBoard,pieces:kind == .pieces ? theme:collection.selectedPieces);revision+=1
-    }
-    func finishSkinPreview(accept:Bool) {
-        guard let preview=skinPreview else{return};skinPreview=nil
-        if accept {selectCollection(preview.kind,theme:preview.theme)}
-        else {world.setCollection(board:collection.selectedBoard,pieces:collection.selectedPieces);revision+=1}
-    }
-    @Published private(set) var rewardSaving=false
-    func openRewardDoor(_ index:Int) async {
-        guard presentingReward,!rewardSaving,!busy else{return}
-        let before=collection
-        var value=before;guard value.openDoor(index) else{return}
-        rewardSaving=true;defer{rewardSaving=false}
-        coach.collection=value
-        do {
-            try await save()
-            if sound {UIImpactFeedbackGenerator(style:value.pending?.complete==true ? .medium:.light).impactOccurred()}
-        } catch {
-            coach.collection=before;checkpoint()
-            self.error=error.localizedDescription
-        }
-    }
-    func selectCollection(_ kind:CollectibleKind,theme:Int) {
-        var value=collection;value.select(kind,theme);coach.collection=value;checkpoint()
-        world.setCollection(board:value.selectedBoard,pieces:value.selectedPieces);revision+=1
-    }
-    func collectReward() async {
-        guard collection.pending?.complete==true,!busy,!rewardSaving else{return}
-        busy=true;defer{busy=false;resumeClock()}
-        var value=collection;value.pending=nil;coach.collection=value;showReturn=false
-        do {try await save();try await cloudJourney()}catch{handle(error)}
-    }
+    var presentingReward:Bool {false}
+    // Collection progress remains archived in coach.collection; no grants or skins are active.
+    var collection:CollectionProgress {CollectionProgress()}
+    var displayedPieces:Int {0}
     @Published var showInfo=false
     @Published var showReturn=false
     @Published private(set) var boardRevealed=false
@@ -489,7 +453,8 @@ struct PositionState:Codable {
         if testing,ProcessInfo.processInfo.arguments.contains("--reward-soon") {var value=CollectionProgress();value.successes=2;value.target=3;coach.collection=value}
         if testing,ProcessInfo.processInfo.arguments.contains("--reward-doors") {var value=CollectionProgress();value.pending=RewardBoard(seed:42);coach.collection=value}
         #endif
-        var prepared=collection;prepared.migrateCatalog();prepared.prepareContents();coach.collection=prepared
+        coach.activateFocusedPuzzles()
+        showReturn=coach.session != nil
         if testing,let arg=ProcessInfo.processInfo.arguments.first(where:{$0.hasPrefix("--board=")}) {
             let parts=arg.dropFirst(8).split(separator:"x").compactMap{Int($0)}
             if parts.count==2,let size=BoardDimensions(columns:parts[0],rows:parts[1]) {coach.preferredColumns=size.columns;coach.preferredRows=size.rows}
@@ -531,7 +496,7 @@ struct PositionState:Codable {
     private func resumeClock() {
         NativeChess.setGameplayActive(foreground && !overlay)
         schedulePreparation()
-        if foreground && !replayActive && collection.pending==nil && !overlay && !busy && !showInfo && !showReturn && boardRevealed && phase=="playing" && coach.session?.recorded==false && clockStarted==nil {clockStarted=ProcessInfo.processInfo.systemUptime}
+        if foreground && !replayActive && !overlay && !busy && !showInfo && !showReturn && boardRevealed && phase=="playing" && coach.session?.recorded==false && clockStarted==nil {clockStarted=ProcessInfo.processInfo.systemUptime}
     }
     func setActive(_ active:Bool) {
         if !active {closeReplay();showHint=false;stopPreparation();world.moveQuality.clear()}
@@ -615,7 +580,6 @@ struct PositionState:Codable {
                 guard let url=Bundle.main.url(forResource:"puzzles",withExtension:"json",subdirectory:"EngineResources") else{throw failure("Missing offline puzzle bank")}
                 bank=try await Task.detached(priority:.userInitiated){try JSONDecoder().decode([TrainingPuzzle].self,from:Data(contentsOf:url))}.value
             }
-            if collection.pending != nil {try await save();phase="reward";return}
             if showReturn {return}
             coach.migrateDifficulty()
             #if DEBUG
@@ -668,32 +632,19 @@ struct PositionState:Codable {
         #if DEBUG
         if testing,journeyActive,ProcessInfo.processInfo.arguments.contains("--journey-slow") {try await wait(4)}
         #endif
-        var personalAvailable=false
-        let defaults=testing ? UserDefaults(suiteName:"com.maroon.CloudChess.profile-tests")!:UserDefaults.standard
-        if let job=defaults.string(forKey:"cloudchess.profileJob") {
-            personalAvailable=(try? await OnDeviceProfiles.shared.hasDrills(jobID:job,avoiding:coach.blockedPuzzleKeys)) == true
-        }
-        personalDrillsAvailable=personalAvailable
-        var kind=coach.selectChallengeKind(personalAvailable:personalAvailable)
-        #if DEBUG
-        if testing,!ProcessInfo.processInfo.arguments.contains("--automatic-mix") {
-            kind = .tactics
-            if let a=ProcessInfo.processInfo.arguments.first(where:{$0.hasPrefix("--challenge=")}),let k=ChallengeKind(rawValue:String(a.dropFirst(12))) {kind=k}
-        }
-        #endif
-        if let type=requiredInstructionType {kind = (type=="mate" || type=="improvement") ? .tactics:(ChallengeKind(rawValue:type) ?? .tactics)}
-        coach.challengeMode=kind
-        if kind != .tactics {try await nextOpenChallenge(kind);return}
+        personalDrillsAvailable=false
+        coach.challengeMode = .tactics
 
         let snapshot=coach,catalog=bank.filter {p in
             p.id != excludedPuzzleID && (requiredInstructionType==nil || (requiredInstructionType=="mate" ? p.mate>0:p.mate==0))
         }
         let selection=await Task.detached(priority:.userInitiated){
             var model=snapshot;let candidates=model.candidates(catalog)
-            return (candidates,model.sequence)
+            return (candidates,model.sequence,model.focusedSelection)
         }.value
         await generationProgress(3)
-        coach.sequence=selection.1
+        coach.sequence=selection.1;coach.focusedSelection=selection.2
+        try await save()
         var candidates=selection.0
         #if DEBUG
         if testing,coach.total==0,let arg=ProcessInfo.processInfo.arguments.first(where:{$0.hasPrefix("--puzzle-mate=")}),let mate=Int(arg.dropFirst(14)) {
@@ -762,7 +713,7 @@ struct PositionState:Codable {
         let size=BoardDimensions(columns:response["columns"] as? Int ?? 8,rows:response["rows"] as? Int ?? 8) ?? .standard
         await CollectionArt.prepare(board:displayedBoard,pieces:displayedPieces,dimensions:size)
     }
-    private var displayedBoard:Int {skinPreview?.kind == .board ? skinPreview!.theme:collection.selectedBoard}
+    private var displayedBoard:Int {0}
     private func apply(_ response:[String:Any],animated:Bool=false) {
         do {
             openAssessment=nil
@@ -813,9 +764,7 @@ struct PositionState:Codable {
         }
         evaluationActivity=nil
         let previousScore=liveScore
-        let completedID=coach.session?.id
         let newlyFinished=coach.finish()
-        if newlyFinished,let completedID {var value=collection;value.solved(sessionID:completedID);coach.collection=value}
         try await save()
         if newlyFinished {scoreChanged(from:previousScore)}
         // Use the celebration window with the UPDATED coach. Fast solvers still
@@ -828,7 +777,6 @@ struct PositionState:Codable {
         #if DEBUG
         if testing,ProcessInfo.processInfo.arguments.contains("--hold-completion") {phase="won";return}
         #endif
-        if collection.pending != nil {world.puzzleExit();phase="reward";boardRevealed=false;finishing=false;return}
         try await cloudJourney()
     }
     private func canPickUp(_ square:String)->Bool {

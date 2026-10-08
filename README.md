@@ -30,6 +30,14 @@ also includes the larger `CloudChess/EngineResources` directory; obtain it from
 the same release if starting from a Git clone. Compiled native libraries are
 rebuilt from the included sources rather than supplied as opaque binaries.
 
+For the latest Git revision, keep the code from that checkout and copy only
+`CloudChess/EngineResources` from the v1.0.0-source archive into it. The focused
+puzzle update changes code only; its networks, puzzle bank and artwork are
+unchanged from that resource archive. Collection and other modes are paused;
+only checkmate and short improvement puzzles are active. Run
+`python3 scripts/build_store_pages.py` after copying the resource directory to
+regenerate the matching offline notices from the current canonical source.
+
 The C++ bridge, proof engine and exact compile flags are included. Detailed art
 can be regenerated using `scripts/build_atelier.py` with Blender. Published
 meshes and textures are already included, so Blender is not required to build or

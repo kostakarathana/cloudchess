@@ -14,12 +14,11 @@ struct CloudChessView:View {
     @State private var settings=false
     @State private var showingProfile=false
     @State private var showingLegal=false
-    @State private var showingCollection=false
     @State private var scoreEmphasis=false
     @State private var displayedScoreEvent=0
     private let ink=Color(red:0.10,green:0.18,blue:0.29)
-    private var modalVisible:Bool {settings || showingProfile || showingLegal || showingCollection || game.skinPreview != nil || game.showInfo || game.showReturn || game.showSkip || game.showUndo || game.showHint || !game.promotion.isEmpty || game.phase=="error"}
-    private var sceneryPaused:Bool {modalVisible && game.skinPreview == nil}
+    private var modalVisible:Bool {settings || showingProfile || showingLegal || game.showInfo || game.showReturn || game.showSkip || game.showUndo || game.showHint || !game.promotion.isEmpty || game.phase=="error"}
+    private var sceneryPaused:Bool {modalVisible}
     var body:some View {
         GeometryReader { geo in
             ZStack {
@@ -44,7 +43,7 @@ struct CloudChessView:View {
                         EngineThinkingIndicator(activity:activity,reduced:reduceMotion || !game.motion)
                             .padding(.bottom,14).allowsHitTesting(false)
                     }
-                    if game.challengeKind == .tenMoves,game.puzzle != nil,!game.showInfo,!game.showReturn,!game.presentingReward,!showingCollection {
+                    if game.challengeKind == .tenMoves,game.puzzle != nil,!game.showInfo,!game.showReturn,!game.presentingReward {
                         HorizontalEvaluationBar(pieceTheme:game.displayedPieces,centipawns:game.coach.session?.evaluation ?? 0,solverWhite:game.solverWhite,reducedMotion:reduceMotion || !game.motion,pending:game.evaluationPending)
                             .opacity(game.evaluationPending ? 0.35:1)
                             .accessibilityHidden(game.evaluationPending)
@@ -70,14 +69,6 @@ struct CloudChessView:View {
                     ProfileAnalysisPanel(close:{showingProfile=false}).zIndex(5)
                 }
                 if showingLegal {CloudLegalPanel(close:{showingLegal=false}).zIndex(5)}
-                if showingCollection {CollectionGallery(game:game,close:{showingCollection=false}).zIndex(5)}
-                if game.skinPreview != nil {
-                    HStack {Spacer();VStack(spacing:6) {
-                        Button {game.finishSkinPreview(accept:true)} label:{Image(systemName:"checkmark").frame(width:44,height:44).contentShape(Rectangle())}.accessibilityLabel("Keep skin").accessibilityIdentifier("accept-skin")
-                        Divider().frame(width:24)
-                        Button {game.finishSkinPreview(accept:false)} label:{Image(systemName:"arrow.uturn.backward").frame(width:44,height:44).contentShape(Rectangle())}.accessibilityLabel("Revert skin").accessibilityIdentifier("revert-skin")
-                    }.padding(6).background(.regularMaterial,in:Capsule()).shadow(radius:12).padding(.trailing,12)}.accessibilityElement(children:.contain).accessibilityAddTraits(.isModal).accessibilityAction(.escape){game.finishSkinPreview(accept:false)}.zIndex(6)
-                }
                 if let started=game.journeyStarted {
                     CloudJourneyVeil(started:started,reveal:game.journeyReveal,reduced:reduceMotion || !game.motion,field:game.journeyClouds)
                         .ignoresSafeArea().allowsHitTesting(true).accessibilityHidden(true).zIndex(9)
@@ -110,7 +101,6 @@ struct CloudChessView:View {
                 }
                 if game.showSkip || game.showUndo || game.showHint {confirmationPanel.zIndex(15)}
                 }.accessibilityHidden(game.presentingReward).allowsHitTesting(!game.presentingReward)
-                if game.presentingReward {RewardDoorsPresentation(game:game).zIndex(20)}
                 #if DEBUG
                 if ProcessInfo.processInfo.arguments.contains("--uitesting") {
                     Color.clear.frame(width:1,height:1).accessibilityElement().accessibilityLabel("Puzzle diagnostics").accessibilityIdentifier("puzzle-status").accessibilityValue(game.diagnostic)
@@ -123,7 +113,7 @@ struct CloudChessView:View {
         .task{game.configureMotion(reduced:reduceMotion);await game.start()}
         // Switching between cards remains one overlay transaction and one save.
         .onChange(of:modalVisible || game.replayActive){_,_ in updateOverlay()}
-        .onChange(of:scenePhase){_,phase in game.setActive(phase == .active);if phase == .background {settings=false;showingCollection=false;showingProfile=false;showingLegal=false;game.showSkip=false;game.showUndo=false;game.showHint=false;game.promotion=[];game.finishSkinPreview(accept:false);game.didEnterBackground()};if phase != .active {game.world.onCancelDrag?();Task{await OnDeviceProfiles.shared.pause()}}}
+        .onChange(of:scenePhase){_,phase in game.setActive(phase == .active);if phase == .background {settings=false;showingProfile=false;showingLegal=false;game.showSkip=false;game.showUndo=false;game.showHint=false;game.promotion=[];game.didEnterBackground()};if phase != .active {game.world.onCancelDrag?();Task{await OnDeviceProfiles.shared.pause()}}}
         .onChange(of:game.motion){_,_ in game.configureMotion(reduced:reduceMotion)}
         .onChange(of:reduceMotion){_,_ in game.configureMotion(reduced:reduceMotion)}
     }
@@ -230,7 +220,6 @@ struct CloudChessView:View {
     private var settingsPanel:some View {
         CloudPopup(title:"Settings",symbol:"slider.horizontal.3",dismiss:{settings=false}) {
             VStack(spacing:10) {
-                menuRow("Dream collection",symbol:"square.stack.3d.up") {settings=false;showingCollection=true}
                 menuRow("Profile analysis",symbol:"person.crop.circle") {settings=false;showingProfile=true}
                 menuRow("Privacy & support",symbol:"hand.raised") {settings=false;showingLegal=true}
                 Divider().padding(.vertical,4)

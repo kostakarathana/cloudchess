@@ -581,3 +581,6 @@ enum AtelierAssets {
         frames.setObject(flattened,forKey:key,cost:cost);return flattened.clone()
     }
 }
+
+// Shared color conversion also used by the board and cloud UI.
+extension Color {init(rgb:UInt32){self.init(uiColor:UIColor(rgb:rgb))}}

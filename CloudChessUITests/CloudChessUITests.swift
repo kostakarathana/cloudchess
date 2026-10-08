@@ -467,7 +467,7 @@ final class CloudChessUITests:XCTestCase {
         var ids:[String]=[],kinds:[String]=[]
         for index in 0..<5 {
             puzzleReady(app,timeout:150)
-            let values=puzzleValues(app),id=values["id"]!,kind=values["kind"]!
+            let values=puzzleValues(app),id=values["id"]!,kind=values["instructionType"]!
             XCTAssertFalse(ids.suffix(3).contains(id),"No puzzle within last three")
             XCTAssertNotEqual(kinds.last,kind,"No adjacent mode repeat")
             ids.append(id);kinds.append(kind)
@@ -1239,13 +1239,21 @@ final class CloudChessUITests:XCTestCase {
     }
 
 
-    func testMenuOffersCollectionInsteadOfLayoutAndMode() throws {
-        let app=XCUIApplication();app.launchArguments=["--uitesting","--reduced-motion"];app.launch();puzzleReady(app)
+    func testFocusedPuzzlesHideCollectionAndRewards() throws {
+        continueAfterFailure=false
+        let app=XCUIApplication();app.launchArguments=["--uitesting","--reward-doors","--challenge=opening","--automatic-mix","--reduced-motion"]
+        app.launch();puzzleReady(app)
+        XCTAssertEqual(puzzleValues(app)["kind"],"tactics")
+        XCTAssertEqual(puzzleValues(app)["rewardBoard"],"0")
         app.buttons["Settings"].tap()
-        for label in ["Board size","Board style","Challenges","Adaptive board mix"] {XCTAssertFalse(app.buttons[label].exists)}
-        XCTAssertFalse(app.buttons["Debug menu"].exists)
-        app.buttons["Settings"].tap();openCollection(app)
-        XCTAssertTrue(app.buttons["collection-default"].waitForExistence(timeout:5))
+        for label in ["Dream collection","Collection","Board size","Board style","Challenges","Debug menu"] {XCTAssertFalse(app.buttons[label].exists)}
+        app.buttons["Close settings"].tap()
+        let initial=puzzleValues(app)["instructionType"]!
+        app.buttons["Skip puzzle"].tap()
+        app.buttons["confirm-action"].tap()
+        puzzleReady(app)
+        XCTAssertNotEqual(puzzleValues(app)["instructionType"],initial)
+        XCTAssertEqual(puzzleValues(app)["kind"],"tactics")
     }
     func testCloudFieldActuallyMovesAndPauses() throws {
         continueAfterFailure=false

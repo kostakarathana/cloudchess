@@ -155,7 +155,7 @@ enum ModeDifficulty {
 enum PreparedChallengeGate {
     static func revalidate(_ p:TrainingPuzzle,ability:Double,age:TimeInterval,coach:AdaptivePuzzleCoach,excluded:String?,instruction:String?,parent:TrainingPuzzle?=nil)->TrainingPuzzle? {
         let kind=p.kind
-        guard kind != .personal,age>=0,age<600,abs(coach.challengeLevel(kind)-ability)<=150,
+        guard kind == .tactics,(coach.focusedSelection?.matches(p) ?? false),age>=0,age<600,abs(coach.challengeLevel(kind)-ability)<=150,
               !coach.seen.contains(p.id),coach.allowsNextPuzzle(p),p.id != excluded,instruction==nil else{return nil}
         if kind == .tactics {
             guard let parent,!(coach.total%4==3 && coach.reviews.contains(where:{coach.eligibleReview($0)})),coach.acceptsComposition(p,from:parent),

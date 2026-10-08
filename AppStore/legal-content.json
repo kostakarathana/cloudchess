@@ -88,8 +88,8 @@
       ],
       "links": [
         {
-          "title": "CloudChess source release",
-          "url": "https://github.com/kostakarathana/cloudchess/releases/tag/v1.0.0-source"
+          "title": "CloudChess source",
+          "url": "https://github.com/kostakarathana/cloudchess"
         },
         {
           "title": "Stockfish project",

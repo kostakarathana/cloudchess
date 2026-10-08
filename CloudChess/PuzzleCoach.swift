@@ -178,7 +178,39 @@ enum PuzzleVariety {
     }
 }
 
+/// Frozen before ranking or proving candidates: failures and reviews cannot bias size.
+struct FocusedPuzzleSelection:Codable,Equatable {
+    var columns:Int,rows:Int,mate:Bool
+    func matches(_ p:TrainingPuzzle)->Bool {
+        p.kind == .tactics && p.columns==columns && p.rows==rows && (p.mate>0)==mate
+    }
+}
+
 struct AdaptivePuzzleCoach:Codable {
+    var focusedSelection:FocusedPuzzleSelection?
+    var previousFocusedMate:Bool?
+    var suspendedModeSession:PuzzleSession?
+    mutating func activateFocusedPuzzles() {
+        if let s=session,s.puzzle.kind != .tactics {
+            suspendedModeSession=s;session=nil
+        }
+        if let p=session?.puzzle,p.kind == .tactics {previousFocusedMate=p.mate>0}
+        challengeMode = .tactics
+    }
+    mutating func uniformIndex(_ count:Int)->Int {
+        precondition(count>0)
+        let n=UInt64(count),limit=UInt64.max-UInt64.max%n
+        var draw=nextRandom();while draw>=limit {draw=nextRandom()}
+        return Int(draw%n)
+    }
+    mutating func prepareFocusedSelection() {
+        guard focusedSelection==nil else{return}
+        let previous=session?.puzzle.kind == .tactics ? session.map{$0.puzzle.mate>0}:previousFocusedMate
+        let mate=previous.map{!$0} ?? (uniformIndex(2)==0)
+        let shape=uniformIndex(25)
+        focusedSelection=FocusedPuzzleSelection(columns:preferredColumns ?? (4+shape/5),rows:preferredRows ?? (4+shape%5),mate:mate)
+    }
+
     var difficultyVersion:String?
     var challengeMode:ChallengeKind?
     var scoring:ChallengeScore?
@@ -236,12 +268,9 @@ struct AdaptivePuzzleCoach:Codable {
     }
     func allowsNextPuzzle(_ p:TrainingPuzzle)->Bool {p.repeatKeys.isDisjoint(with:blockedPuzzleKeys)}
     mutating func selectChallengeKind(personalAvailable:Bool)->ChallengeKind {
-        let pool=ChallengeKind.allCases.filter{(personalAvailable || $0 != .personal) && $0 != previousChallengeKind}
-        // Uniform among the eligible alternatives, without predictable cycles.
-        // Only begin() commits history; failed or speculative draws never do.
-        let count=UInt64(pool.count),limit=UInt64.max-UInt64.max%count
-        var draw=nextRandom();while draw>=limit {draw=nextRandom()}
-        return pool[Int(draw%count)]
+        // Both active puzzle families use the all-defenses tactical prover.
+        // Their family/shape draw happens once before candidate ranking.
+        return .tactics
     }
 
     var remainingHearts:Int {guard let s=session,s.puzzle.kind.usesHearts else{return 0};return max(0,3-s.mistakes)}
@@ -329,11 +358,12 @@ struct AdaptivePuzzleCoach:Codable {
     }
     func eligibleReview(_ review:PuzzleReview)->Bool {
         let p=probability(review.puzzle,level:challengeLevel(.tactics))
-        return allowsNextPuzzle(review.puzzle) && review.due<=total && p>=0.25 && p<=0.95 && (preferredColumns==nil || (review.puzzle.columns==preferredColumns && review.puzzle.rows==preferredRows))
+        return review.puzzle.kind == .tactics && (focusedSelection?.matches(review.puzzle) ?? true) && allowsNextPuzzle(review.puzzle) && review.due<=total && p>=0.25 && p<=0.95 && (preferredColumns==nil || (review.puzzle.columns==preferredColumns && review.puzzle.rows==preferredRows))
     }
     mutating func candidates(_ bank:[TrainingPuzzle])->[TrainingPuzzle] {
+        prepareFocusedSelection()
         let blocked=blockedPuzzleKeys
-        let eligible=bank.filter{$0.repeatKeys.isDisjoint(with:blocked) && (preferredColumns==nil || ($0.columns==preferredColumns && $0.rows==preferredRows))}
+        let eligible=bank.filter{focusedSelection!.matches($0) && $0.repeatKeys.isDisjoint(with:blocked) && (preferredColumns==nil || ($0.columns==preferredColumns && $0.rows==preferredRows))}
         let recent=Set(seen.suffix(4000)),recentSources=Set(attempts.suffix(12).map{$0.source ?? $0.puzzle.components(separatedBy:"-")[0]})
         let lastFamily=attempts.last?.family,seed=nextRandom()
         let desired=target,targetLogOdds=log(desired/(1-desired)),selectionLevel=challengeLevel(.tactics)
@@ -380,6 +410,8 @@ struct AdaptivePuzzleCoach:Codable {
         return picks
     }
     mutating func begin(_ p:TrainingPuzzle) {
+        if p.kind == .tactics {previousFocusedMate=p.mate>0}
+        focusedSelection=nil
         recentPuzzleKeys=Array(((recentPuzzleKeys ?? seen.suffix(3).map{PuzzleVariety.legacyKeys($0)})+[p.repeatKeys.sorted()]).suffix(3))
         recentChallengeKinds=Array(((recentChallengeKinds ?? [])+[p.kind]).suffix(12))
         if p.kind == .whosWinning {judgmentDraws=(judgmentDraws ?? 0)+1}
