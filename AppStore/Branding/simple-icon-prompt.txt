@@ -1,0 +1,7 @@
+Built-in image_gen edit; sips exports the standard 1024×1024 iOS size.
+
+Use case: style-transfer / logo-brand.
+Radically simplify the supplied CloudChess app icon. The user finds its sculptural detail much too complicated.
+Replace the elaborate horse with ONE exceptionally simple classic chess PAWN silhouette: a plain circular head, a smooth tapering neck/body, and one broad low oval base. Flat solid dark navy fill, clean symmetrical iconic geometry, no facial features, no carving, no ornaments, no rings, no reflective finish. A single small clean navy infinity symbol floats just above the pawn's head with a clear gap. Put three or four broad, rounded, nearly flat white cloud puffs around the lower base and lower sides. Background is a uniform very pale sky blue with at most the faintest gradient.
+The entire result should look like a beautifully minimal vector-style app icon, readable at 32 pixels: simple shapes, generous negative space, very restrained softness, no fine texture or tiny details. Pawn and infinity centered, large and recognizable; clouds frame rather than obscure them. No text, letters, borders, chess board, extra pieces, 3D render, specular lighting, realistic cloud texture or photographic atmosphere.
+Square 1024×1024 opaque image, artwork extends edge to edge with NO baked rounded outside corners. Keep the navy/white/pale-blue CloudChess palette.
