@@ -1,0 +1,6 @@
+Built-in image_gen generation, resized to 1024 × 1024 with sips for the iOS asset catalog.
+
+Use case: logo-brand.
+Create the actual iOS app icon for CloudChess. EXACT square 1024 by 1024 pixels, fully opaque RGB, edge-to-edge artwork with no baked rounded corners (iOS applies its own corner mask).
+A single beautiful, immediately recognizable chess KNIGHT in deep navy blue, centered, clean sculpted porcelain with soft dimensional lighting. Just above the knight's head, one clearly readable horizontal infinity symbol (∞), thick smooth navy strokes, floating like a small crown with a clear gap from the ears. The knight is surrounded by a restrained frame of plush dreamy white and pale-blue cumulus clouds at the bottom and sides. Soft light-blue sky behind. Strong readable silhouette and infinity mark even when tiny. The knight and infinity symbol together dominate the middle 75% of the icon; fluffy clouds partially wrap the base but never obscure the face or infinity. Simple elegant illustration with premium 3D softness, crisp edges, gentle shadows, navy/white/sky-blue palette consistent with CloudChess.
+Exactly ONE chess piece and ONE infinity symbol. No chess board, no other pieces, no letters, no app name, no text, no borders, no watermarks, no screenshot or phone mockup. Keep important elements inside a generous safe area.
