@@ -2,6 +2,21 @@ import XCTest
 import UIKit
 import StoreKitTest
 final class CloudChessUITests:XCTestCase {
+    /// Captures real rendered gameplay; no composited or invented app UI.
+    func testAppStoreScreenshotSet() throws {
+        continueAfterFailure=false
+        for (name,shape,mate) in [("01-checkmate","6x6",2),("02-winning-moves","8x8",0),("03-small-board","5x5",1),("04-rectangular-board","4x6",2)] {
+            let app=XCUIApplication()
+            app.launchArguments=["--uitesting","--board=\(shape)","--puzzle-mate=\(mate)","--reduced-motion"]
+            app.launch();puzzleReady(app,timeout:90)
+            XCTAssertEqual(puzzleValues(app)["boardMatches"],"1")
+            XCTAssertEqual(puzzleValues(app)["error"],"0")
+            XCTAssertTrue(app.buttons["Settings"].isHittable)
+            let shot=XCTAttachment(screenshot:app.screenshot())
+            shot.name="store-\(name)";shot.lifetime = .keepAlways;add(shot)
+            app.terminate()
+        }
+    }
     @MainActor func testSubscriptionPurchaseRestoreAndRevocation() throws {
         continueAfterFailure=false
         let store=try SKTestSession(configurationFileNamed:"CloudChess")
