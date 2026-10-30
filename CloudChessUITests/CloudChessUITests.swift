@@ -89,14 +89,14 @@ final class CloudChessUITests:XCTestCase {
         store.resetToDefaultState();store.clearTransactions();store.disableDialogs=true
         let app=XCUIApplication();app.launchArguments=["--uitesting","--monetization-testing","--board=6x6","--reduced-motion"]
         app.launch();puzzleReady(app)
-        XCTAssertEqual(puzzleValues(app)["freeRemaining"],"2")
+        XCTAssertEqual(puzzleValues(app)["freeRemaining"],"5")
         // Reopening a saved board never uses a second slot.
         let id=puzzleValues(app)["id"]
         app.terminate();app.launchArguments += ["--preserve-allowance","--preserve-coach"]
         app.launch();puzzleReady(app)
         XCTAssertEqual(puzzleValues(app)["id"],id)
-        XCTAssertEqual(puzzleValues(app)["freeRemaining"],"2")
-        for remaining in [1,0] {
+        XCTAssertEqual(puzzleValues(app)["freeRemaining"],"5")
+        for remaining in [4,3,2,1,0] {
             app.buttons["Skip puzzle"].tap();app.buttons["confirm-action"].tap();puzzleReady(app)
             XCTAssertEqual(puzzleValues(app)["freeRemaining"],String(remaining))
         }
@@ -326,7 +326,8 @@ final class CloudChessUITests:XCTestCase {
         }
         puzzleReady(app)
         let current=puzzleValues(app)
-        XCTAssertGreaterThanOrEqual(Int(current["lastJourneyMs"]!)!,1100)
+        // 0.38 s veil close + 0.55 s cinematic window + 0.03 s settle + 0.4 s opening.
+        XCTAssertGreaterThanOrEqual(Int(current["lastJourneyMs"]!)!,800)
         XCTAssertEqual(current["journeyFallbacks"],"0","Fast generation stays inside the cloud transition")
         XCTAssertLessThan(Int(current["lastJourneyMs"]!)!,2200)
         app.buttons["Watch the key moment"].tap()
@@ -691,14 +692,19 @@ final class CloudChessUITests:XCTestCase {
             puzzleMove(app,String(bad));puzzleReady(app)
         }
         let original=puzzleValues(app),value=pow(Double(original["itemRating"]!)!,1.5)
+        XCTAssertEqual(original["cooldowns"],"0")
         mistake();XCTAssertEqual(puzzleValues(app)["hearts"],"2")
         XCTAssertEqual(puzzleValues(app)["mistakeFeedback"],"1");XCTAssertEqual(puzzleValues(app)["scoreDirection"],"-1")
         XCTAssertEqual(Double(puzzleValues(app)["score"]!)!,1_000_000-value*0.25,accuracy:2)
         puzzleMove(app,puzzleValues(app)["next"]!);puzzleReady(app)
         XCTAssertEqual(puzzleValues(app)["hearts"],"2","Attempts belong to this puzzle; correct play does not refill")
         mistake();XCTAssertEqual(puzzleValues(app)["hearts"],"1")
-        mistake();let after=puzzleValues(app)
+        // The failed position stays visible before the cloud journey (1.2 s under reduced motion).
+        let hold=failureHold(app) {let v=puzzleValues(app),winning=Set(v["winning"]!.split(separator:"|"));puzzleMove(app,String(v["legal"]!.split(separator:"|").first{!winning.contains($0) && $0.count==4}!))}
+        XCTAssertGreaterThanOrEqual(hold,1.0,"Third mistake rests on the failed position before the journey")
+        puzzleReady(app);let after=puzzleValues(app)
         XCTAssertNotEqual(after["id"],original["id"]);XCTAssertEqual(after["hearts"],"3")
+        XCTAssertEqual(after["cooldowns"],"1","The failed puzzle rests behind a cooldown")
         XCTAssertEqual(Double(after["score"]!)!,max(0,1_000_000-value*2.5),accuracy:2)
         XCTAssertEqual(after["mistakeFeedback"],"3");XCTAssertEqual(after["scoreEvents"],"3")
         XCTAssertEqual(after["best"],"1000000","A failed puzzle never resets the lifetime high")
@@ -711,6 +717,30 @@ final class CloudChessUITests:XCTestCase {
         XCTAssertEqual(puzzleValues(app)["error"],"0")
         XCTAssertEqual(puzzleValues(app)["scoreEvents"],"4");XCTAssertEqual(puzzleValues(app)["outcomeHaptics"],"4")
         let shot=XCTAttachment(screenshot:app.screenshot());shot.name="Per-puzzle hearts and lifetime crown";shot.lifetime = .keepAlways;add(shot)
+    }
+    /// Seconds between the first `phase:failed,` observation and the start of the cloud journey.
+    private func failureHold(_ app:XCUIApplication,after action:()->Void)->Double {
+        let status=app.otherElements["puzzle-status"]
+        action()
+        let deadline=Date().addingTimeInterval(60);var failedAt:Date?
+        while Date()<deadline {
+            let value=status.value as? String ?? ""
+            if failedAt==nil,value.contains("phase:failed,") {failedAt=Date()}
+            if let failedAt,value.contains("journey:1,") || value.contains("phase:journey,") || value.contains("ready:1,") {return Date().timeIntervalSince(failedAt)}
+        }
+        XCTFail("Third mistake never reached the failed phase and journey: \(status.value ?? "missing")");return 0
+    }
+    func testFailureHoldWithMotion() throws {
+        continueAfterFailure=false
+        let app=XCUIApplication();app.launchArguments=["--uitesting","--board=6x6","--puzzle-mate=3","--score=1000000"];app.launch();puzzleReady(app)
+        func bad()->String {let v=puzzleValues(app),winning=Set(v["winning"]!.split(separator:"|"));return String(v["legal"]!.split(separator:"|").first{!winning.contains($0) && $0.count==4}!)}
+        for _ in 0..<2 {puzzleMove(app,bad());puzzleReady(app)}
+        XCTAssertEqual(puzzleValues(app)["hearts"],"1")
+        let hold=failureHold(app) {puzzleMove(app,bad())}
+        XCTAssertGreaterThanOrEqual(hold,1.5,"Third mistake rests 1.8 s with motion on")
+        puzzleReady(app);let after=puzzleValues(app)
+        XCTAssertEqual(after["hearts"],"3");XCTAssertEqual(after["cooldowns"],"1")
+        XCTAssertGreaterThanOrEqual(Int(after["lastJourneyMs"]!)!,800);XCTAssertLessThan(Int(after["lastJourneyMs"]!)!,2200)
     }
     func testKingDominoGeneration() throws {
         continueAfterFailure=false
@@ -1043,15 +1073,56 @@ final class CloudChessUITests:XCTestCase {
     }
     func testLoadingAndAnalysisMainThreadCadence() throws {
         continueAfterFailure=false
+        // The focused release converts every non-tactical fixture to tactics, so
+        // the audit now drags a certified mate-in-two move with speculation on.
         let app=XCUIApplication()
-        app.launchArguments=["--uitesting","--challenge=opening","--challenge-fixture=white","--collection-audit=122","--smoothness-audit","--turn-prefetch-audit"]
+        app.launchArguments=["--uitesting","--board=6x6","--puzzle-mate=2","--smoothness-audit","--prefetch-audit"]
         app.launch();puzzleReady(app,timeout:90)
-        puzzleMove(app,"d2d4",drag:true);puzzleReady(app,timeout:90)
+        puzzleMove(app,puzzleValues(app)["next"]!,drag:true);puzzleReady(app,timeout:90)
         XCTAssertEqual(puzzleValues(app)["moves"],"2")
         XCTAssertEqual(puzzleValues(app)["hearts"],"3")
         XCTAssertEqual(puzzleValues(app)["boardMatches"],"1")
-        Thread.sleep(forTimeInterval:16) // Includes cold generation, drop, save and real full-strength analysis.
-        let shot=XCTAttachment(screenshot:app.screenshot());shot.name="Responsive opening with detailed pieces";shot.lifetime = .keepAlways;add(shot)
+        Thread.sleep(forTimeInterval:16) // Includes cold generation, drop, save and the real full-budget proof.
+        let shot=XCTAttachment(screenshot:app.screenshot());shot.name="Responsive tactical turn";shot.lifetime = .keepAlways;add(shot)
+    }
+    func testTacticalTurnLatencyEvidence() throws {
+        continueAfterFailure=false
+        let app=XCUIApplication()
+        app.launchArguments=["--uitesting","--board=6x6","--puzzle-mate=2","--prefetch-audit","--smoothness-audit"]
+        app.launch();puzzleReady(app,timeout:90)
+        let status=app.otherElements["puzzle-status"]
+        let start=Date();puzzleMove(app,puzzleValues(app)["next"]!,drag:true)
+        expectation(for:NSPredicate(format:"value CONTAINS %@ AND value CONTAINS %@","ready:1,","moves:2,"),evaluatedWith:status)
+        waitForExpectations(timeout:30)
+        let values=puzzleValues(app)
+        XCTAssertEqual(values["hearts"],"3");XCTAssertEqual(values["boardMatches"],"1")
+        XCTAssertGreaterThan(Int(values["lastTurnMs"]!)!,0)
+        print("TURN_LATENCY lastTurnMs=\(values["lastTurnMs"]!) wallMs=\(Int(Date().timeIntervalSince(start)*1000)) id=\(values["id"]!)")
+        let attachment=XCTAttachment(string:"Tactical drag through defence reply: lastTurnMs=\(values["lastTurnMs"]!) (drop to input unlock, in-app), wall \(Date().timeIntervalSince(start)) s including XCTest gesture overhead")
+        attachment.name="Tactical turn latency";attachment.lifetime = .keepAlways;add(attachment)
+    }
+    func testJourneyWithCompositions() throws {
+        continueAfterFailure=false
+        let app=XCUIApplication()
+        app.launchArguments=["--uitesting","--board=8x8","--puzzle-mate=0","--compose","--prefetch-audit"]
+        app.launch();puzzleReady(app,timeout:120)
+        let status=app.otherElements["puzzle-status"]
+        for round in 0..<5 {
+            let before=puzzleValues(app)["id"]!
+            var plies=0
+            while puzzleValues(app)["id"]==before && plies<10 {
+                plies+=1
+                let next=puzzleValues(app)["next"]!;XCTAssertGreaterThanOrEqual(next.count,4,"Certified line available")
+                puzzleMove(app,next)
+                let settled=XCTNSPredicateExpectation(predicate:NSPredicate(format:"value CONTAINS %@ AND value CONTAINS %@","ready:1,","evaluating:0,"),object:status)
+                XCTAssertEqual(XCTWaiter.wait(for:[settled],timeout:120),.completed,"Puzzle readiness: \(status.value ?? "missing")")
+                let info=app.buttons["acknowledge-instructions"];if info.exists {info.tap()}
+            }
+            let v=puzzleValues(app)
+            XCTAssertNotEqual(v["id"],before,"Round \(round) reached the next puzzle")
+            XCTAssertEqual(v["error"],"0");XCTAssertEqual(v["boardMatches"],"1")
+            print("JOURNEY_COMPOSE round=\(round) lastJourneyMs=\(v["lastJourneyMs"]!) journeyFallbacks=\(v["journeyFallbacks"]!) preparedUsed=\(v["preparedUsed"]!) id=\(v["id"]!)")
+        }
     }
     func testAtelierFullBoardCadence() throws {
         let app=XCUIApplication();app.launchArguments=["--uitesting","--board=8x8","--piece-gallery","--collection-audit=122","--atelier-frame-audit","--render-audit"]
@@ -1324,8 +1395,8 @@ final class CloudChessUITests:XCTestCase {
         app.buttons["Settings"].tap();app.buttons["Profile analysis"].tap()
         let status=app.otherElements["profile-analysis-status"]
         XCTAssertTrue(status.waitForExistence(timeout:5))
-        expectation(for:NSPredicate(format:"value == %@","completed"),evaluatedWith:status);waitForExpectations(timeout:240)
-        XCTAssertTrue(app.otherElements["profile-analysis-report"].exists);XCTAssertFalse(app.staticTexts["White to solve"].exists)
+        // Interim reports appear while analysing; a full 2M/4M game exceeds a UI-test budget.
+        XCTAssertTrue(app.otherElements["profile-analysis-report"].waitForExistence(timeout:240));XCTAssertFalse(app.staticTexts["White to solve"].exists)
         app.buttons["Close profile analysis"].tap()
         puzzleMove(app,puzzleValues(app)["next"]!);puzzleReady(app)
         XCTAssertEqual(puzzleValues(app)["completed"],"1")
@@ -1363,6 +1434,92 @@ final class CloudChessUITests:XCTestCase {
         puzzleReady(app)
         XCTAssertNotEqual(puzzleValues(app)["instructionType"],initial)
         XCTAssertEqual(puzzleValues(app)["kind"],"tactics")
+    }
+    private func meanLuminance(_ app:XCUIApplication,crop rect:CGRect?)->Double {
+        let image=app.screenshot().image.cgImage!
+        let region=rect.map {r->CGRect in let f=CGFloat(image.width)/app.frame.width;return CGRect(x:r.minX*f,y:r.minY*f,width:r.width*f,height:r.height*f)}
+            ?? CGRect(x:0,y:Double(image.height)*0.73,width:Double(image.width)*0.95,height:Double(image.height)*0.08)
+        let crop=image.cropping(to:region)!
+        let context=CGContext(data:nil,width:crop.width,height:crop.height,bitsPerComponent:8,bytesPerRow:crop.width*4,space:CGColorSpaceCreateDeviceRGB(),bitmapInfo:CGImageAlphaInfo.premultipliedLast.rawValue)!
+        context.draw(crop,in:CGRect(x:0,y:0,width:crop.width,height:crop.height))
+        let bytes=context.data!.assumingMemoryBound(to:UInt8.self);var total=0.0
+        for i in stride(from:0,to:crop.width*crop.height*4,by:4) {total+=0.2126*Double(bytes[i])+0.7152*Double(bytes[i+1])+0.0722*Double(bytes[i+2])}
+        return total/Double(crop.width*crop.height)
+    }
+    private func expectSideText(_ app:XCUIApplication,_ count:String,_ message:String="") {
+        let shown=XCTNSPredicateExpectation(predicate:NSPredicate(format:"value CONTAINS %@","sideText:\(count),"),object:app.otherElements["puzzle-status"])
+        XCTAssertEqual(XCTWaiter.wait(for:[shown],timeout:5),.completed,"\(message) sideText expected \(count): \(puzzleValues(app)["sideText"] ?? "missing")")
+    }
+    func testNightModeToggleDarkensSkyKeepsBoardAndPersists() throws {
+        continueAfterFailure=false
+        let app=XCUIApplication();app.launchArguments=["--uitesting","--board=8x8","--puzzle-mate=2","--cloud-validation","--reduced-motion"];app.launch();puzzleReady(app)
+        let toggle=app.buttons["night-toggle"]
+        XCTAssertTrue(toggle.waitForExistence(timeout:10));XCTAssertTrue(toggle.isHittable)
+        XCTAssertGreaterThanOrEqual(toggle.frame.width,44);XCTAssertGreaterThanOrEqual(toggle.frame.height,44)
+        XCTAssertGreaterThan(toggle.frame.maxX,app.frame.width*0.8,"Night toggle sits at the bottom right")
+        XCTAssertGreaterThan(toggle.frame.minY,app.frame.height*0.81,"Toggle stays below the cloud pixel band")
+        XCTAssertEqual(toggle.frame.midY,app.buttons["Undo move"].frame.midY,accuracy:2,"Toggle shares the dock baseline")
+        XCTAssertEqual(toggle.label,"Night mode");XCTAssertEqual(toggle.value as? String,"Off")
+        XCTAssertEqual(puzzleValues(app)["night"],"0")
+        let tiles=app.otherElements["board-plane-d4"].frame.union(app.otherElements["board-plane-e5"].frame)
+        let texts=app.staticTexts.count
+        let skyBefore=meanLuminance(app,crop:nil),boardBefore=meanLuminance(app,crop:tiles)
+        toggle.tap();Thread.sleep(forTimeInterval:0.4)
+        let skyAfter=meanLuminance(app,crop:nil),boardAfter=meanLuminance(app,crop:tiles)
+        XCTAssertLessThan(skyAfter,skyBefore*0.6,"Night sky must darken the cloud band (\(skyBefore) -> \(skyAfter))")
+        XCTAssertLessThan(boardAfter,boardBefore*0.9,"Board darkens at night (\(boardBefore) -> \(boardAfter))")
+        XCTAssertGreaterThan(boardAfter,boardBefore*0.55,"Board stays readable at night (\(boardBefore) -> \(boardAfter))")
+        XCTAssertEqual(puzzleValues(app)["night"],"1");XCTAssertEqual(toggle.value as? String,"On")
+        XCTAssertEqual(app.staticTexts.count,texts);XCTAssertFalse(app.staticTexts["White to solve"].exists)
+        XCTAssertTrue(app.buttons["square-e2"].isHittable,"Board input unaffected by night")
+        let shot=XCTAttachment(screenshot:app.screenshot());shot.name="Night mode";shot.lifetime = .keepAlways;add(shot)
+        app.terminate();app.launchArguments=["--uitesting","--preserve-style","--preserve-coach","--reduced-motion"];app.launch();puzzleReady(app)
+        XCTAssertEqual(puzzleValues(app)["night"],"1","Night persists across launches")
+        XCTAssertEqual(app.buttons["night-toggle"].value as? String,"On")
+        app.buttons["night-toggle"].tap()
+        XCTAssertEqual(puzzleValues(app)["night"],"0");XCTAssertEqual(app.buttons["night-toggle"].value as? String,"Off")
+    }
+    func testSideAnnouncementOnEveryReveal() throws {
+        continueAfterFailure=false
+        let app=XCUIApplication();app.launchArguments=["--uitesting","--board=6x6","--puzzle-mate=1"];app.launch();puzzleReady(app)
+        let status=app.otherElements["puzzle-status"]
+        expectSideText(app,"1","One announcement per reveal")
+        XCTAssertEqual(puzzleValues(app)["sideVisible"],"1")
+        Thread.sleep(forTimeInterval:0.3)
+        let shot=XCTAttachment(screenshot:app.screenshot());shot.name="Playing as side text";shot.lifetime = .keepAlways;add(shot)
+        XCTAssertEqual(puzzleValues(app)["hintMarks"],"0");XCTAssertEqual(puzzleValues(app)["boardMatches"],"1")
+        XCTAssertFalse(app.staticTexts["Playing as White"].exists);XCTAssertFalse(app.staticTexts["Playing as Black"].exists)
+        let gone=XCTNSPredicateExpectation(predicate:NSPredicate(format:"value CONTAINS %@","sideVisible:0,"),object:status)
+        XCTAssertEqual(XCTWaiter.wait(for:[gone],timeout:6),.completed,"Text evaporates and clears itself")
+        let first=puzzleValues(app)["id"]!
+        puzzleMove(app,puzzleValues(app)["next"]!)
+        let changed=XCTNSPredicateExpectation(predicate:NSPredicate(format:"value CONTAINS %@ AND NOT value CONTAINS %@","ready:1,","id:\(first),"),object:status)
+        XCTAssertEqual(XCTWaiter.wait(for:[changed],timeout:40),.completed)
+        puzzleReady(app)
+        expectSideText(app,"2","Journey reveal announces again")
+        XCUIDevice.shared.press(.home);Thread.sleep(forTimeInterval:2);app.activate()
+        XCTAssertTrue(app.buttons["continue-session"].waitForExistence(timeout:10))
+        app.buttons["continue-session"].tap();puzzleReady(app)
+        expectSideText(app,"3","Resume reveal announces again")
+        app.buttons["Skip puzzle"].tap();app.buttons["confirm-action"].tap();puzzleReady(app)
+        expectSideText(app,"4","Skip handoff announces again")
+        XCTAssertEqual(puzzleValues(app)["hintMarks"],"0");XCTAssertEqual(puzzleValues(app)["boardMatches"],"1")
+    }
+    func testSideAnnouncementReducedMotionFadesWithoutCloud() throws {
+        continueAfterFailure=false
+        let app=XCUIApplication();app.launchArguments=["--uitesting","--board=6x6","--puzzle-mate=1","--reduced-motion"];app.launch();puzzleReady(app)
+        let status=app.otherElements["puzzle-status"]
+        expectSideText(app,"1")
+        XCTAssertTrue((app.otherElements["piece-effects"].value as? String ?? "").contains("particles:0,"),"Reduce Motion shows no evaporation cloud")
+        let gone=XCTNSPredicateExpectation(predicate:NSPredicate(format:"value CONTAINS %@","sideVisible:0,"),object:status)
+        XCTAssertEqual(XCTWaiter.wait(for:[gone],timeout:2.5),.completed,"Reduced variant fades out within two seconds")
+        let first=puzzleValues(app)["id"]!
+        puzzleMove(app,puzzleValues(app)["next"]!)
+        let changed=XCTNSPredicateExpectation(predicate:NSPredicate(format:"value CONTAINS %@ AND NOT value CONTAINS %@","ready:1,","id:\(first),"),object:status)
+        XCTAssertEqual(XCTWaiter.wait(for:[changed],timeout:40),.completed)
+        puzzleReady(app)
+        expectSideText(app,"2")
+        XCTAssertTrue((app.otherElements["piece-effects"].value as? String ?? "").contains("particles:0,"))
     }
     func testCloudFieldActuallyMovesAndPauses() throws {
         continueAfterFailure=false
@@ -1414,6 +1571,9 @@ final class CloudChessUITests:XCTestCase {
             // moving an edge. A one-pixel shift across a tile exceeds this by >100.
             XCTAssertLessThanOrEqual(maximum,1,"Stationary board pixels changed beyond HDR rounding")
         }
+        // The side announcement rises and evaporates over the centre tiles at reveal; sample the board once it has cleared.
+        let announced=XCTNSPredicateExpectation(predicate:NSPredicate(format:"value CONTAINS %@","sideVisible:0,"),object:app.otherElements["puzzle-status"])
+        XCTAssertEqual(XCTWaiter.wait(for:[announced],timeout:8),.completed)
         let frame=app.otherElements["board-plane-d4"].frame
         let original=boardPixels();Thread.sleep(forTimeInterval:2)
         assertBoardUnchanged(original,boardPixels())

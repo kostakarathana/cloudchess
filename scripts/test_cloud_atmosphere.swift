@@ -65,6 +65,50 @@ import simd
             }
         }
         print("Passed \(checks) quadrupled-touch response comparisons")
+        // Night amount: instant and animated ramps, pause independence, palette and clamping.
+        let night=CloudAtmosphereDynamics()
+        _ = night.frame(at:0)
+        let day=night.appearance
+        night.setNight(1,animated:false)
+        precondition(night.night==1,"Instant night applies immediately")
+        let moon=night.appearance
+        precondition(abs(moon.0.x-0.040)<1e-6 && abs(moon.0.y-0.055)<1e-6 && abs(moon.0.z-0.10)<1e-6,"Night ambient palette")
+        precondition(abs(moon.1.x-0.20)<1e-6 && abs(moon.1.y-0.25)<1e-6 && abs(moon.1.z-0.37)<1e-6,"Moon-lit palette")
+        precondition(moon.0.w==day.0.w && moon.1.w==day.1.w,"Theme flags survive night")
+        night.setNight(0,animated:false);precondition(night.night==0 && night.appearance.0==day.0 && night.appearance.1==day.1)
+        for hz in [30,60,120] {
+            let ramp=CloudAtmosphereDynamics();_ = ramp.frame(at:0)
+            ramp.setNight(1,animated:true)
+            precondition(ramp.night==0,"Animated ramp waits for the next frame")
+            var previous:Float=0,reached:Double?
+            for i in 1...(hz*2) {
+                let now=Double(i)/Double(hz);_ = ramp.frame(at:now)
+                let value=ramp.night
+                precondition(value>=previous,"Ramp is monotonic")
+                let expected=Float(min(1,max(0,(now-1/Double(hz))/CloudAtmosphereDynamics.nightTransition)))
+                let smooth=expected*expected*(3-2*expected)
+                precondition(abs(value-smooth)<1e-5,"Smoothstep shape at \(hz) Hz")
+                if value>=1 && reached==nil {reached=now}
+                previous=value
+            }
+            precondition(reached != nil && reached!<=1/Double(hz)+CloudAtmosphereDynamics.nightTransition+1e-9,"Ramp completes within 0.5 s")
+        }
+        // Paused only freezes wind/time; the ramp still completes on frame(at:) calls.
+        let pausedRamp=CloudAtmosphereDynamics();_ = pausedRamp.frame(at:0);pausedRamp.setPaused(true)
+        pausedRamp.setNight(1,animated:true)
+        var frozen=pausedRamp.frame(at:0.5)
+        for i in 1...60 {frozen=pausedRamp.frame(at:0.5+Double(i)/60)}
+        precondition(pausedRamp.night==1,"Ramp completes while paused");precondition(frozen.0==0,"Pause still freezes wind time")
+        // Night never alters wind/touch output.
+        let a=CloudAtmosphereDynamics(),b=CloudAtmosphereDynamics()
+        _ = a.frame(at:0);_ = b.frame(at:0);b.setNight(1,animated:false)
+        precondition(a.begin(at:SIMD2(0.3,0.7)) && b.begin(at:SIMD2(0.3,0.7)));a.drag(SIMD2(0.1,0.05));b.drag(SIMD2(0.1,0.05))
+        for i in 1...120 {let x=a.frame(at:Double(i)/60),y=b.frame(at:Double(i)/60);precondition(x.0==y.0 && x.1==y.1 && x.2==y.2,"Night is independent of wind and touch")}
+        let clamp=CloudAtmosphereDynamics()
+        clamp.setNight(Float.nan,animated:false);precondition(clamp.night==0,"NaN clamps to day")
+        clamp.setNight(7,animated:false);precondition(clamp.night==1,"Over-range clamps to night")
+        clamp.setNight(-2,animated:false);precondition(clamp.night==0)
+        print("Passed night ramp, palette, pause-independence and clamping checks")
         print("Passed shared cloud field input, displacement, pause, resume, and release checks")
     }
 }

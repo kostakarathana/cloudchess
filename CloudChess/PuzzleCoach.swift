@@ -167,6 +167,20 @@ struct PuzzleSession:Codable {
 
 }
 struct PuzzleReview:Codable {var puzzle:TrainingPuzzle;var due:Int}
+/// Persisted after a failed, lost or skipped tactical puzzle. `until` is a
+/// completed-puzzle count (`coach.total`); `notBefore` is seconds since 1970.
+/// Both gates must open before any reflection or composition may return.
+struct PuzzleCooldown:Codable,Equatable {
+    var keys:[String]
+    var source:String
+    var until:Int
+    var notBefore:Double
+    var failures:Int
+    static let basePresentations=12,maxPresentations=96
+    static let baseSeconds=15*60.0,maxSeconds=4*3600.0
+    static let limit=64
+    func active(total:Int,now:Double)->Bool {total<until || now<notBefore}
+}
 
 enum PuzzleVariety {
     static func legacyKeys(_ id:String)->[String] {
@@ -219,6 +233,8 @@ struct AdaptivePuzzleCoach:Codable {
     var collection:CollectionProgress?
     var recentChallengeKinds:[ChallengeKind]?
     var recentPuzzleKeys:[[String]]?
+    /// nil in older saves. Pruned and extended only by `finish`; selection reads it.
+    var failureCooldowns:[PuzzleCooldown]?
     var judgmentDraws:Int?
     var adaptationVersion:String?
     var modeSkills:[String:PuzzleAbility]?
@@ -260,14 +276,27 @@ struct AdaptivePuzzleCoach:Codable {
     var previousChallengeKind:ChallengeKind? {
         session?.puzzle.kind ?? recentChallengeKinds?.last ?? attempts.last?.kind
     }
-    var blockedPuzzleKeys:Set<String> {
+    /// Last three presentations plus the current session: never relaxed.
+    var recencyPuzzleKeys:Set<String> {
         // Older saves retain their last three IDs; the current session also has
         // enough information to protect its position and tactical symmetries.
         var keys=Set((recentPuzzleKeys ?? seen.suffix(3).map{PuzzleVariety.legacyKeys($0)}).suffix(3).flatMap{$0})
         if let p=session?.puzzle {keys.formUnion(p.repeatKeys)}
         return keys
     }
-    func allowsNextPuzzle(_ p:TrainingPuzzle)->Bool {p.repeatKeys.isDisjoint(with:blockedPuzzleKeys)}
+    func activeCooldowns(now:Double=Date().timeIntervalSince1970)->[PuzzleCooldown] {
+        (failureCooldowns ?? []).filter{$0.active(total:total,now:now)}
+    }
+    func cooldownKeys(now:Double=Date().timeIntervalSince1970)->Set<String> {
+        Set(activeCooldowns(now:now).flatMap{$0.keys})
+    }
+    func blockedPuzzleKeys(now:Double)->Set<String> {recencyPuzzleKeys.union(cooldownKeys(now:now))}
+    var blockedPuzzleKeys:Set<String> {blockedPuzzleKeys(now:Date().timeIntervalSince1970)}
+    func allowsNextPuzzle(_ p:TrainingPuzzle,now:Double)->Bool {p.repeatKeys.isDisjoint(with:blockedPuzzleKeys(now:now))}
+    func allowsNextPuzzle(_ p:TrainingPuzzle)->Bool {allowsNextPuzzle(p,now:Date().timeIntervalSince1970)}
+    /// Two consecutive totals per period so the alternating family always
+    /// gets one review slot; prepared handoffs yield on the same slots.
+    var reviewSlot:Bool {total%4>=2}
     mutating func selectChallengeKind(personalAvailable:Bool)->ChallengeKind {
         // Both active puzzle families use the all-defenses tactical prover.
         // Their family/shape draw happens once before candidate ranking.
@@ -363,8 +392,14 @@ struct AdaptivePuzzleCoach:Codable {
     }
     mutating func candidates(_ bank:[TrainingPuzzle])->[TrainingPuzzle] {
         prepareFocusedSelection()
-        let blocked=blockedPuzzleKeys
-        let eligible=bank.filter{focusedSelection!.matches($0) && $0.repeatKeys.isDisjoint(with:blocked) && (preferredColumns==nil || ($0.columns==preferredColumns && $0.rows==preferredRows))}
+        var blocked=blockedPuzzleKeys
+        func stratum(_ blocked:Set<String>)->[TrainingPuzzle] {
+            bank.filter{focusedSelection!.matches($0) && $0.repeatKeys.isDisjoint(with:blocked) && (preferredColumns==nil || ($0.columns==preferredColumns && $0.rows==preferredRows))}
+        }
+        var eligible=stratum(blocked)
+        // Starvation guard: a thin stratum relaxes failure cooldowns only,
+        // never the last-three/current-session exclusion or the frozen draw.
+        if eligible.count<8 {blocked=recencyPuzzleKeys;eligible=stratum(blocked)}
         let recent=Set(seen.suffix(4000)),recentSources=Set(attempts.suffix(12).map{$0.source ?? $0.puzzle.components(separatedBy:"-")[0]})
         let lastFamily=attempts.last?.family,seed=nextRandom()
         let desired=target,targetLogOdds=log(desired/(1-desired)),selectionLevel=challengeLevel(.tactics)
@@ -407,7 +442,7 @@ struct AdaptivePuzzleCoach:Codable {
         }
         ranked.sort{$0.0 == $1.0 ? $0.2.id<$1.2.id:$0.0<$1.0}
         var picks=Array(ranked.lazy.map{$0.2.variant($0.1)}.filter{$0.repeatKeys.isDisjoint(with:blocked)}.prefix(16))
-        if total%4==3,let review=reviews.first(where:{eligibleReview($0)}) {picks.insert(review.puzzle,at:0)}
+        if reviewSlot,let review=reviews.first(where:{eligibleReview($0)}) {picks.insert(review.puzzle,at:0)}
         return picks
     }
     mutating func begin(_ p:TrainingPuzzle) {
@@ -426,7 +461,7 @@ struct AdaptivePuzzleCoach:Codable {
         seen.append(p.id);if seen.count>8000{seen.removeFirst(seen.count-8000)}
     }
     // Idempotent across app suspension, retries, and a relaunch during confetti.
-    @discardableResult mutating func finish(skipped:Bool=false)->Bool {
+    @discardableResult mutating func finish(skipped:Bool=false,now:Double=Date().timeIntervalSince1970)->Bool {
         guard var s=session,!s.recorded,!attempts.contains(where:{$0.id==s.id}) else{return false}
         let p=s.puzzle,clean = !skipped && s.mistakes==0 && s.hints==0
         var score=scoring ?? ChallengeScore();score.settle(s,success:!skipped);scoring=score;s.succeeded = !skipped
@@ -462,7 +497,27 @@ struct AdaptivePuzzleCoach:Codable {
         update(&a,share:0.25,limit:20);a.mean=min(250,max(-250,a.mean));shapes[key]=a
         if clean,s.elapsed>1 {pace=0.94*pace+0.06*min(3,max(0.4,s.elapsed/max(8,p.seconds)))}
         reviews.removeAll{$0.puzzle.id==p.id}
-        if !clean,p.kind == .tactics {reviews.append(PuzzleReview(puzzle:p,due:total+7));if reviews.count>128{reviews.removeFirst()}}
+        // Failed, lost and skipped tactical puzzles rest for a growing number of
+        // completions AND wall-clock minutes (12/15min, 24/30min, 48/1h, 96/2h,
+        // capped 96/4h) before any reflection or composition may return. A
+        // clean, unassisted success of the same source resets that growth, so
+        // expired entries stay (bounded FIFO) to remember unresolved failures.
+        var cooldowns=failureCooldowns ?? [],reviewDue=total+7
+        if p.kind == .tactics {
+            let sourceKey=p.source.isEmpty ? p.id:p.source
+            if skipped {
+                let previous=cooldowns.first{$0.source==sourceKey}?.failures ?? 0
+                cooldowns.removeAll{$0.source==sourceKey}
+                let failures=min(5,previous+1),scale=pow(2,Double(failures-1))
+                let entry=PuzzleCooldown(keys:p.repeatKeys.sorted(),source:sourceKey,
+                    until:total+1+min(PuzzleCooldown.maxPresentations,Int(Double(PuzzleCooldown.basePresentations)*scale)),
+                    notBefore:now+min(PuzzleCooldown.maxSeconds,PuzzleCooldown.baseSeconds*scale),failures:failures)
+                cooldowns.append(entry);reviewDue=max(reviewDue,entry.until)
+            } else if clean {cooldowns.removeAll{$0.source==sourceKey}}
+        }
+        if cooldowns.count>PuzzleCooldown.limit {cooldowns.removeFirst(cooldowns.count-PuzzleCooldown.limit)}
+        failureCooldowns=cooldowns
+        if !clean,p.kind == .tactics {reviews.append(PuzzleReview(puzzle:p,due:reviewDue));if reviews.count>128{reviews.removeFirst()}}
         attempts.append(PuzzleAttempt(id:s.id,puzzle:p.id,tags:p.tags,family:p.family,rating:p.rating,predicted:predicted,seconds:s.elapsed,mistakes:s.mistakes,hints:s.hints,skipped:skipped,clean:clean,source:p.source,expectedSeconds:expected,difficultyVersion:p.difficultyVersion,kind:p.kind,opponentElo:s.opponentElo,succeeded:!skipped))
         if attempts.count>2000 {attempts.removeFirst()}
         total+=1;streak=clean ? streak+1:0;s.recorded=true;session=s;return true

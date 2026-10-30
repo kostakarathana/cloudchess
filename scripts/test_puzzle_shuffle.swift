@@ -8,7 +8,7 @@ import Foundation
     // Use real catalogue positions, including all modes' shared identity rules.
     for i in 0..<10000 {
         let kind=coach.selectChallengeKind(personalAvailable:i%17<8)
-        check(kind != coach.previousChallengeKind,"No adjacent mode repeat with changing availability")
+        check(kind == .tactics,"Focused puzzles select only the tactical families")
         let frozen=coach.recentPuzzleKeys
         var speculation=coach
         _ = speculation.selectChallengeKind(personalAvailable:true)
@@ -41,9 +41,18 @@ import Foundation
     c=AdaptivePuzzleCoach();c.begin(a.variant(1))
     for symmetry in 0..<4 {check(!c.allowsNextPuzzle(a.variant(symmetry)),"Mirrored tactical puzzle is still the same puzzle")}
     c.session=nil
-    check(c.selectChallengeKind(personalAvailable:true) != .tactics,"Clearing session for skip retains previous mode")
+    check(c.selectChallengeKind(personalAvailable:true) == .tactics,"Clearing session for skip stays in focused tactics")
     c.total=3;c.reviews=[PuzzleReview(puzzle:a,due:0)]
     check(!c.eligibleReview(c.reviews[0]),"Due review cannot bypass cooldown")
+    for t in 0..<8 {c.total=t;check(c.reviewSlot==(t%4>=2),"Review slots cover both alternating families")}
+    c.total=3
+    // A failed presentation blocks every reflection beyond the last three until its cooldown ends.
+    var failed=AdaptivePuzzleCoach();failed.begin(a);failed.session?.mistakes=3;failed.finish(skipped:true,now:0)
+    for p in bank[1...3] {failed.begin(p);failed.session?.elapsed=30;failed.finish(now:0)}
+    for symmetry in 0..<4 {check(!failed.allowsNextPuzzle(a.variant(symmetry)),"Failed puzzle rests beyond the last three")}
+    failed=try JSONDecoder().decode(AdaptivePuzzleCoach.self,from:JSONEncoder().encode(failed))
+    check(!failed.allowsNextPuzzle(a),"Failure cooldown survives relaunch")
+    failed.total=failed.failureCooldowns![0].until;check(failed.allowsNextPuzzle(a),"Cooldown releases after its completions and minutes")
     check(c.candidates(bank).allSatisfy{c.allowsNextPuzzle($0)},"Tactical candidate shortlist obeys hard exclusion")
     // Prepared assets with a new identity must still obey position cooldown.
     var candidate=a;candidate.id="new-cache-key"

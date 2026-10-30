@@ -15,7 +15,7 @@ for p in data['pages']:
  body+=''.join(f'<p><a href="{esc(link["url"],quote=True)}">{esc(link["title"])}</a></p>' for link in p['links'])
  if p['id']=='licenses':body+='<p><a href="stockfish-license.txt">GNU General Public License v3</a> · <a href="opening-book-CC0.txt">CC0 license</a></p>'
  (OUT/f'{p["id"]}.html').write_text(page(p['title'],body))
-(OUT/'index.html').write_text(page('CloudChess','<p>Privacy, support and open-source information for the CloudChess iPhone and iPad app.</p>'))
+shutil.copyfile(ROOT/'AppStore/landing.html', OUT/'index.html')
 (OUT/'.nojekyll').write_text('')
 for source,dest in [('Copying.txt','stockfish-license.txt'),('opening-book-CC0.txt','opening-book-CC0.txt')]:shutil.copyfile(ROOT/'CloudChess/EngineResources'/source,OUT/dest)
 shutil.copyfile(ROOT/'AppStore/legal-content.json',ROOT/'CloudChess/EngineResources/legal-content.json')

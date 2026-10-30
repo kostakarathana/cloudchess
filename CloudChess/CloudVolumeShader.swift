@@ -43,6 +43,7 @@ enum CloudVolumeShader {
         float3 ray=normalize(u.forward.xyz+float3(1,0,0)*ndc.x*u.eye.w*aspect+u.up.xyz*ndc.y*u.eye.w);
         float3 origin=u.eye.xyz;
         float3 sun=u.sun.xyz;
+        float night=u.sun.w;
         float2 delta=(uv-u.touch.xy)*float2(1.0,1.0/aspect);
         float influence=exp(-dot(delta,delta)/.024);
         float entry=(-.8-origin.y)/ray.y;
@@ -70,18 +71,20 @@ enum CloudVolumeShader {
                 float wrapped=clamp(dot(normal,sun)*.55+.48,0.0,1.0);
                 float sculpted=mix(.43,1.0,wrapped);
                 float3 shade=u.shadow.xyz+u.light.xyz*light*sculpted;
-                shade += (1.0-exp(-d*1.6))*float3(.025,.028,.035);
+                shade += (1.0-exp(-d*1.6))*float3(.025,.028,.035)*(1.0-.6*night);
                 shade *= .92+.08*smoothstep(-6.0,-2.5,p.y);
                 shade *= 1.0-platformShadow(world-float3(0,u.board.z,u.board.w),sun,u.board.xy)*.17;
                 // Far clouds softly merge into the blue atmosphere.
                 float haze=smoothstep(28.0,46.0,t)*.22;
-                shade=mix(shade,float3(.65,.77,.88),haze);
+                shade=mix(shade,mix(float3(.65,.77,.88),float3(.05,.06,.12),night),haze);
                 float alpha=1.0-exp(-d*step*3.4);
                 color += trans*alpha*shade;trans *= 1.0-alpha;
                 if(trans<.012)break;
             }
         }
         float3 sky=u.shadow.w==0 ? mix(float3(.53,.69,.84),float3(.69,.80,.89),uv.y) : u.shadow.xyz*.65+u.light.xyz*.18;
+        // Night: deep navy overhead toward indigo at the horizon.
+        sky=mix(sky,mix(float3(.010,.016,.055),float3(.040,.038,.105),uv.y),night);
         // Cheap atmosphere accents after the volume pass; no additional rays.
         if(u.shadow.w==1) {
             float phase=fmod(u.screen.z,13.0);
@@ -99,12 +102,13 @@ enum CloudVolumeShader {
         color += trans*sky;
         // Sparse world-specific atmosphere in the existing pass, with no new
         // particle systems, lights or raymarch samples. Time freezes with Motion off.
-        if(u.shadow.w==2 || u.shadow.w==13) {
+        float starGain=(u.shadow.w==2 || u.shadow.w==13) ? 1.0 : night*1.6;
+        if(starGain>0.0) {
             float2 starGrid=uv*float2(31,55);
             float2 id=floor(starGrid),cell=fract(starGrid)-.5;
             float seed=fract(sin(dot(id,float2(71.3,19.7)))*43758.3);
             float star=exp(-dot(cell,cell)*650.0)*metal::step(.88,seed);
-            color+=star*(.025+.018*sin(u.screen.z*.45+seed*21.0))*float3(.7,.82,1.0);
+            color+=star*(.025+.018*sin(u.screen.z*.45+seed*21.0))*float3(.7,.82,1.0)*starGain;
         }
         if(u.shadow.w==3) {
             float a=sin(uv.x*19.0+sin(uv.y*13.0+u.screen.z*.10)*1.5);
@@ -120,7 +124,8 @@ enum CloudVolumeShader {
             color+=mote*tint*(.7+.3*sin(seed*24.0+u.screen.z*.4));
         }
         float sunshine=exp(-dot(uv-float2(.08,.12),uv-float2(.08,.12))/.4);
-        color=mix(color,color*float3(1.025,1.008,.985),sunshine*.5);
+        color=mix(color,color*float3(1.025,1.008,.985),sunshine*.5*(1.0-night));
+        color+=sunshine*night*float3(.006,.009,.020);
         return float4(pow(clamp(color,0.0,1.0),float3(1.0/2.2)),1);
     }
     """

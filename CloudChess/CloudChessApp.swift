@@ -18,13 +18,16 @@ struct CloudChessView:View {
     @State private var scoreEmphasis=false
     @State private var displayedScoreEvent=0
     private let ink=Color(red:0.10,green:0.18,blue:0.29)
+    /// Pale ink for the few HUD glyphs drawn directly on the sky; cards and
+    /// popups keep the global ink on their white chrome.
+    private var hudInk:Color {game.night ? Color(red:0.93,green:0.96,blue:1):ink}
     private var modalVisible:Bool {game.showSubscription || settings || showingProfile || showingLegal || game.showInfo || game.showReturn || game.showSkip || game.showUndo || game.showHint || !game.promotion.isEmpty || game.phase=="error"}
     private var sceneryPaused:Bool {modalVisible}
     var body:some View {
         GeometryReader { geo in
             ZStack {
                 ZStack {
-                CloudAtmosphere(motion:!game.isGenerating && game.motion && !reduceMotion && !game.presentingReward && !sceneryPaused,field:game.world.cloudField).ignoresSafeArea()
+                CloudAtmosphere(motion:!game.isGenerating && game.motion && !reduceMotion && !game.presentingReward && !sceneryPaused,night:game.night,field:game.world.cloudField).ignoresSafeArea()
                 ChessSceneView(world:game.world,revision:game.revision,concealed:!game.boardRevealed || game.showReturn || game.presentingReward,paused:sceneryPaused,inputBlocked:modalVisible || game.replayActive || game.journeyActive)
                     .ignoresSafeArea().opacity(game.boardRevealed && !game.showReturn && !game.presentingReward ? 1:0)
                     .accessibilityHidden(modalVisible || !game.boardRevealed || game.showInfo || game.showReturn || game.replayActive || game.journeyActive || game.presentingReward).accessibilityIdentifier("chessboard")
@@ -36,7 +39,7 @@ struct CloudChessView:View {
                         scoreDisplay
                         Spacer()
                         Button {withAnimation(reduceMotion || !game.motion ? nil:.spring(response:0.4,dampingFraction:0.8)){settings.toggle()}} label:{symbol(settings ? "xmark":"slider.horizontal.3",size:18)}.accessibilityLabel("Settings")
-                    }.padding(.horizontal,27).padding(.top,18)
+                    }.foregroundStyle(hudInk).padding(.horizontal,27).padding(.top,18)
                     challengeCloud.padding(.top,12).padding(.horizontal,22)
                     Spacer(minLength:0)
                     
@@ -62,6 +65,16 @@ struct CloudChessView:View {
                         if game.hasReplay {control("play.rectangle","Watch the key moment",disabled:game.busy){Task{await game.watchReplay()}}}
                     }.padding(.horizontal,12).padding(.vertical,4).background {CloudChromeSurface(puffiness:0.45)}.frame(width:(game.challengeKind == .whosWinning ? 24:144)+(game.hasReplay ? 58:0)).padding(.bottom,32)
                     }
+                }.overlay(alignment:.bottomTrailing) {
+                    Button {game.night.toggle();if game.sound {UISelectionFeedbackGenerator().selectionChanged()}} label:{
+                        symbol(game.night ? "sun.max.fill":"moon.fill",size:18)
+                            .contentTransition(reduceMotion || !game.motion ? .identity:.symbolEffect(.replace))
+                            .padding(4)
+                            .background {CloudChromeSurface(puffiness:0.45)}
+                            .contentShape(Circle())
+                    }.padding(.trailing,27).padding(.bottom,32)
+                        .accessibilityLabel("Night mode").accessibilityValue(game.night ? "On":"Off")
+                        .accessibilityAddTraits(game.night ? .isSelected:[]).accessibilityIdentifier("night-toggle")
                 }.opacity(game.isGenerating || game.journeyActive || game.replayActive ? 0:1).allowsHitTesting(!modalVisible && !game.isGenerating && !game.journeyActive && !game.replayActive && !game.presentingReward).accessibilityHidden(modalVisible || game.isGenerating || game.journeyActive || game.replayActive || game.showInfo || game.showReturn || game.presentingReward)
                 }
                 if settings {settingsPanel.zIndex(5)}
@@ -71,7 +84,7 @@ struct CloudChessView:View {
                 }
                 if showingLegal {CloudLegalPanel(close:{showingLegal=false}).zIndex(5)}
                 if let started=game.journeyStarted {
-                    CloudJourneyVeil(started:started,reveal:game.journeyReveal,reduced:reduceMotion || !game.motion,field:game.journeyClouds)
+                    CloudJourneyVeil(started:started,reveal:game.journeyReveal,reduced:reduceMotion || !game.motion,night:game.night,field:game.journeyClouds)
                         .ignoresSafeArea().allowsHitTesting(true).accessibilityHidden(true).zIndex(9)
                 }
                 if game.replayActive {replayControls.zIndex(8)}
@@ -117,10 +130,10 @@ struct CloudChessView:View {
         }
         .environment(\.cloudMotion,game.motion)
         .statusBarHidden(true)
-        .task{game.configureMotion(reduced:reduceMotion);await game.start()}
+        .task{game.configureMotion(reduced:reduceMotion);game.configureNight(animated:false);await game.start()}
         // Switching between cards remains one overlay transaction and one save.
         .onChange(of:modalVisible || game.replayActive){_,_ in updateOverlay()}
-        .onChange(of:scenePhase){_,phase in game.setActive(phase == .active);if phase == .active {Task{await subscription.refreshEntitlements()}};if phase == .background {settings=false;showingProfile=false;showingLegal=false;game.showSkip=false;game.showUndo=false;game.showHint=false;game.promotion=[];game.didEnterBackground()};if phase != .active {game.world.onCancelDrag?();Task{await OnDeviceProfiles.shared.pause()}}}
+        .onChange(of:scenePhase){_,phase in game.setActive(phase == .active);if phase == .active {Task{await subscription.refreshEntitlements()}};if phase == .background {settings=false;showingProfile=false;showingLegal=false;game.showSkip=false;game.showUndo=false;game.showHint=false;game.promotion=[];game.didEnterBackground()};if phase != .active {game.world.onCancelDrag?()};if phase == .background {Task{await OnDeviceProfiles.shared.pause()}}}
         .onChange(of:game.motion){_,_ in game.configureMotion(reduced:reduceMotion)}
         .onChange(of:reduceMotion){_,_ in game.configureMotion(reduced:reduceMotion)}
     }
@@ -148,7 +161,7 @@ struct CloudChessView:View {
     private var scoreDisplay:some View {
         VStack(spacing:2) {
             Text(Int(game.liveScore).formatted()).lineLimit(1).minimumScaleFactor(0.65).font(.system(size:26,weight:.semibold,design:.rounded)).monospacedDigit()
-                .foregroundStyle(scoreEmphasis ? (game.scoreDirection>0 ? Color(red:0.10,green:0.48,blue:0.31):Color(red:0.80,green:0.13,blue:0.22)):ink)
+                .foregroundStyle(scoreEmphasis ? (game.scoreDirection>0 ? (game.night ? Color(red:0.45,green:0.85,blue:0.62):Color(red:0.10,green:0.48,blue:0.31)):(game.night ? Color(red:1.0,green:0.50,blue:0.56):Color(red:0.80,green:0.13,blue:0.22))):hudInk)
                 .scaleEffect(scoreEmphasis && !reduceMotion && game.motion ? 1.34:1)
                 .contentTransition(.numericText()).accessibilityIdentifier("live-score")
                 .animation(reduceMotion || !game.motion ? nil:.spring(response:0.38,dampingFraction:0.65),value:game.liveScore)
@@ -161,13 +174,13 @@ struct CloudChessView:View {
                     withAnimation(.easeOut(duration:0.3)){scoreEmphasis=false}
                 }
             HStack(spacing:4) {Image(systemName:"crown.fill");Text(Int(game.coach.scoring?.best ?? 0).formatted()).monospacedDigit()}
-                .font(.system(size:11,weight:.medium)).foregroundStyle(ink.opacity(0.6)).padding(.top,4)
+                .font(.system(size:11,weight:.medium)).foregroundStyle(hudInk.opacity(0.6)).padding(.top,4)
                 .accessibilityElement(children:.ignore).accessibilityLabel("All-time high")
                 .accessibilityValue(Int(game.coach.scoring?.best ?? 0).formatted()).accessibilityIdentifier("all-time-high")
             if game.challengeKind.usesHearts {
                 HStack(spacing:7) {ForEach(0..<3) {i in
                     Image(systemName:i<game.coach.remainingHearts ? "heart.fill":"heart")
-                        .foregroundStyle(i<game.coach.remainingHearts ? Color(red:0.80,green:0.35,blue:0.40):ink.opacity(0.25))
+                        .foregroundStyle(i<game.coach.remainingHearts ? Color(red:0.80,green:0.35,blue:0.40):hudInk.opacity(0.25))
                         .frame(width:22,height:22)
                 }}.font(.system(size:18)).padding(.top,6)
                     .accessibilityElement(children:.ignore).accessibilityLabel("Puzzle attempts")
@@ -627,13 +640,13 @@ private struct JudgmentControls:View {
 /// The same volumetric art as the sky passes IN FRONT of the board. Its opaque
 /// two-bank mask conceals the handoff; the existing GPU resources are shared.
 private struct CloudJourneyVeil:View {
-    let started:Date,reveal:Date?,reduced:Bool,field:CloudAtmosphereDynamics
+    let started:Date,reveal:Date?,reduced:Bool,night:Bool,field:CloudAtmosphereDynamics
     var body:some View {
-        CloudAtmosphere(motion:!reduced,field:field)
+        CloudAtmosphere(motion:!reduced,night:night,field:field)
             .mask {
                 TimelineView(.animation(minimumInterval:1.0/30,paused:reduced)) {timeline in
                     let age=max(0,timeline.date.timeIntervalSince(started))
-                    let opening=reveal.map{min(1,max(0,timeline.date.timeIntervalSince($0)/0.5))} ?? 0
+                    let opening=reveal.map{min(1,max(0,timeline.date.timeIntervalSince($0)/0.4))} ?? 0
                     let coverage=reduced ? (reveal==nil ? 1.0:0.0):min(1,age/0.35)*(1-opening)
                     Canvas {ctx,size in
                         let smooth=coverage*coverage*(3-2*coverage)

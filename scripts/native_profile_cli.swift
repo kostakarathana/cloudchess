@@ -48,10 +48,15 @@ import Foundation
         }
         guard args.count>1 else{return}
         let job=try await OnDeviceProfiles.shared.start(args[1],limit:args.count>2 ? Int(args[2]):nil),id=job["id"] as! String
-        var last=""
+        var last="",lastReport="";let started=Date()
         while true {
             let status=try await OnDeviceProfiles.shared.status(id),phase=status["status"] as! String
-            if phase != last {FileHandle.standardError.write(Data((phase+"\n").utf8));last=phase}
+            if phase != last {FileHandle.standardError.write(Data((phase+" +\(Int(Date().timeIntervalSince(started)))s received=\(status["received"] ?? 0)\n").utf8));last=phase}
+            if let reportID=status["report"] as? String,reportID != lastReport {
+                lastReport=reportID
+                let coverage=(try await OnDeviceProfiles.shared.report(id))["coverage"] as? [String:Any] ?? [:]
+                FileHandle.standardError.write(Data(("interim report +\(Int(Date().timeIntervalSince(started)))s analysedGames=\(coverage["analysedGames"] ?? 0) importedGames=\(coverage["importedGames"] ?? 0)\n").utf8))
+            }
             if phase=="completed" {
                 let report=try await OnDeviceProfiles.shared.report(id)
                 print(String(data:try JSONSerialization.data(withJSONObject:report,options:[.sortedKeys,.prettyPrinted]),encoding:.utf8)!)

@@ -5,6 +5,9 @@ struct ProfileJob:Decodable {
     let id:String
     let status:String
     let error:String?
+    let report:String?
+    let userPaused:Bool?
+    let received:Int?
 }
 struct ProfileReport:Codable {
     struct Coverage:Codable {let importedGames:Int;let analysedGames:Int;let completeGameDecisions:Int}
@@ -44,6 +47,7 @@ struct ProfileReport:Codable {
     private let jobKey="cloudchess.profileJob"
     private let reportKey="cloudchess.profileReport"
     private var generation=UUID()
+    private var shownReport:String?
     private var testing:Bool {
         #if DEBUG
         return ProcessInfo.processInfo.arguments.contains("--uitesting")
@@ -53,6 +57,11 @@ struct ProfileReport:Codable {
     }
     var running:Bool {working || ["queued","importing","analysing","modelling"].contains(job?.status ?? "")}
     var state:String {error != nil ? "error":job?.status ?? "empty"}
+    /// Spoken progress only; the panel itself stays free of counts.
+    var spokenState:String {
+        if error==nil,job?.status=="importing",let received=job?.received,received>0 {return "importing, \(received) games received"}
+        return error ?? state
+    }
 
     init() {
         #if DEBUG
@@ -121,7 +130,7 @@ struct ProfileReport:Codable {
             // flight, so an accepted server job is not accidentally orphaned.
             self.defaults.set(created.id,forKey:self.jobKey)
             guard self.generation==current else {return}
-            self.job=created;self.report=nil;self.defaults.removeObject(forKey:self.reportKey)
+            self.job=created;self.report=nil;self.shownReport=nil;self.defaults.removeObject(forKey:self.reportKey)
             try await self.watch(created.id,current:current)
         }
     }
@@ -138,7 +147,12 @@ struct ProfileReport:Codable {
         guard let id=defaults.string(forKey:jobKey) else {return}
         launch { [weak self] current in
             guard let self else {return}
-            let data=try await self.request("/jobs/"+id+"/resume",body:[:])
+            let data:Data
+            do {data=try await self.request("/jobs/"+id+"/resume",body:[:])}
+            catch let failure as NSError where failure.domain=="CloudChess.Profile" && failure.localizedDescription=="An analysis is already running" {
+                // The app already resumed this saved job on activation; just watch it.
+                data=try await self.request("/jobs/"+id)
+            }
             guard self.generation==current else {return}
             self.job=try JSONDecoder().decode(ProfileJob.self,from:data)
             try await self.watch(id,current:current)
@@ -156,21 +170,27 @@ struct ProfileReport:Codable {
         worker?.cancel();worker=nil;generation=UUID();working=false
     }
     private func watch(_ id:String,current:UUID) async throws {
+        var graced=false
         while !Task.isCancelled && generation==current {
             let data=try await request("/jobs/"+id)
             try Task.checkCancellation()
             guard generation==current else {return}
             let value=try JSONDecoder().decode(ProfileJob.self,from:data);job=value
-            if value.status=="completed" {
+            // Interim reports arrive after import and after every analysed
+            // game; the same report id is fetched once.
+            if let reportID=value.report,reportID != shownReport {
                 let reportData=try await request("/jobs/"+id+"/report")
                 try Task.checkCancellation()
                 guard generation==current else {return}
                 report=try JSONDecoder().decode(ProfileReport.self,from:reportData)
-                defaults.set(reportData,forKey:reportKey)
-                return
+                defaults.set(reportData,forKey:reportKey);shownReport=reportID
             }
+            if value.status=="completed" {return}
             if ["failed","cancelled","interrupted"].contains(value.status) {
-                error=value.error;return
+                // A non-user pause is normally resumed by the app on activation;
+                // allow one more poll before reporting it as paused.
+                if value.status=="failed" || value.userPaused==true || graced {error=value.error;return}
+                graced=true
             }
             try await Task.sleep(for:.seconds(3))
         }
@@ -227,7 +247,7 @@ struct ProfileAnalysisPanel:View {
                 }
                 if let report=model.report {reportView(report)}
             }.accessibilityElement(children:.contain)
-                .accessibilityIdentifier("profile-analysis-status").accessibilityValue(model.error ?? model.state)
+                .accessibilityIdentifier("profile-analysis-status").accessibilityValue(model.spokenState)
         } actions: {
             VStack(spacing:8) {
                 Button(action:analyse) {Text("Analyse profile").frame(maxWidth:.infinity)}.buttonStyle(CloudActionStyle())
@@ -240,7 +260,8 @@ struct ProfileAnalysisPanel:View {
             }
         }.foregroundStyle(ink).accessibilityIdentifier("profile-panel")
             .onAppear{model.open()}.onDisappear{model.stopWatching()}
-            .onChange(of:scenePhase){_,phase in if phase == .active {model.open()} else {model.stopWatching();Task{await OnDeviceProfiles.shared.pause()}}}
+            // Inactivity (auto-lock, Control Center) keeps the job and the watch alive; only backgrounding pauses.
+            .onChange(of:scenePhase){_,phase in if phase == .active {model.open()} else if phase == .background {model.stopWatching();Task{await OnDeviceProfiles.shared.pause()}}}
     }
     @ViewBuilder private func reportView(_ report:ProfileReport)->some View {
         VStack(spacing:20) {

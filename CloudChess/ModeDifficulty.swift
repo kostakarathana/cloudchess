@@ -158,7 +158,7 @@ enum PreparedChallengeGate {
         guard kind == .tactics,(coach.focusedSelection?.matches(p) ?? false),age>=0,age<600,abs(coach.challengeLevel(kind)-ability)<=150,
               !coach.seen.contains(p.id),coach.allowsNextPuzzle(p),p.id != excluded,instruction==nil else{return nil}
         if kind == .tactics {
-            guard let parent,!(coach.total%4==3 && coach.reviews.contains(where:{coach.eligibleReview($0)})),coach.acceptsComposition(p,from:parent),
+            guard let parent,!(coach.reviewSlot && coach.reviews.contains(where:{coach.eligibleReview($0)})),coach.acceptsComposition(p,from:parent),
                   coach.preferredColumns==nil || (p.columns==coach.preferredColumns && p.rows==coach.preferredRows) else{return nil}
             return p
         }

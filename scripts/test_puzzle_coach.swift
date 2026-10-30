@@ -74,14 +74,20 @@ import Foundation
         check(weak.ability.mean==local,"Imported rating cannot reset learned ability")
         var review=AdaptivePuzzleCoach();let missed=sample.variant(2)
         review.ability.mean=missed.rating
-        review.total=11;review.reviews=[PuzzleReview(puzzle:missed,due:8)]
+        // Score-driven progression level equal to the item keeps the review inside its success band.
+        review.scoring=ChallengeScore(total:max(0,100000*(pow(2,(missed.rating-850)/300)-1)),best:0)
+        let missedPlan=FocusedPuzzleSelection(columns:missed.columns,rows:missed.rows,mate:missed.mate>0)
+        review.total=10;review.reviews=[PuzzleReview(puzzle:missed,due:8)];review.focusedSelection=missedPlan
+        check(review.candidates(bank).first?.id==missed.id,"Even review slot serves the due review")
+        review.total=11;review.focusedSelection=missedPlan
         check(review.candidates(bank).first?.id==missed.id,"Due review retains its exact position")
         review.begin(missed);review.session?.elapsed=30;review.finish()
         check(review.reviews.isEmpty,"Successful review retires its queue entry")
         for cols in 4...8 {for rows in 4...8 {
             var m=AdaptivePuzzleCoach();m.preferredColumns=cols;m.preferredRows=rows
             let picks=m.candidates(bank);check(picks.count>=8);check(picks.allSatisfy{$0.columns==cols && $0.rows==rows})
-            var same=m;same.sequence=0;var fresh=AdaptivePuzzleCoach();fresh.preferredColumns=cols;fresh.preferredRows=rows
+            // Same frozen draw and random sequence must give the same shortlist.
+            var same=m;same.sequence=0;var fresh=AdaptivePuzzleCoach();fresh.preferredColumns=cols;fresh.preferredRows=rows;fresh.focusedSelection=same.focusedSelection
             check(same.candidates(bank).map{$0.id}==fresh.candidates(bank).map{$0.id},"Deterministic selection")
         }}
         // Progression must rise on the actual item bank, not merely make the
@@ -102,9 +108,11 @@ import Foundation
             progressions.append(["shape":"\(columns)x\(rows)","initialMean":first,"afterMasteryMean":last])
         }}
         for c in 4...8 {for r in 4...8 {
-            var expert=AdaptivePuzzleCoach();expert.preferredColumns=c;expert.preferredRows=r;expert.ability.mean=3000;expert.ability.variance=2500
-            let maximum=bank.filter{$0.columns==c && $0.rows==r}.map{$0.rating}.max()!
-            let chosen=expert.candidates(bank)[0]
+            // Selection level is score-driven: a top score and top ability reach the 3000 cap.
+            var expert=AdaptivePuzzleCoach();expert.preferredColumns=c;expert.preferredRows=r;expert.ability.mean=3000;expert.ability.variance=2500;expert.scoring=ChallengeScore(total:20_000_000,best:20_000_000)
+            // The ceiling is that of the drawn shape AND family stratum.
+            let chosen=expert.candidates(bank)[0],plan=expert.focusedSelection!
+            let maximum=bank.filter{plan.matches($0)}.map{$0.rating}.max()!
             check(chosen.rating>=maximum-120,"At the bank ceiling, choose a hard item instead of a saturated-probability tie")
         }}
         var single=AdaptivePuzzleCoach();single.begin(sample);single.session?.mistakes=1;single.finish()

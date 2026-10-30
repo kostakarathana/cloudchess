@@ -11,12 +11,32 @@ final class CloudAtmosphereDynamics {
     private var point=SIMD2<Float>(0.5,0.75)
     private var count=0
     private var theme:Int=0
+    // One night amount shared by the sky and the journey veil. The ramp advances
+    // on frame(at:) regardless of pause so an instant switch needs only one draw.
+    private var nightTarget:Float=0,nightFrom:Float=0,nightValue:Float=0
+    private var nightStart:Double?,nightPending=false
+    static let nightTransition:Double=0.5
+    func setNight(_ amount:Float,animated:Bool) {
+        lock.lock();defer{lock.unlock()}
+        let value=max(0,min(1,amount.isFinite ? amount:0))
+        nightTarget=value
+        if animated && value != nightValue {nightFrom=nightValue;nightPending=true;nightStart=nil}
+        else {nightValue=value;nightFrom=value;nightPending=false;nightStart=nil}
+    }
+    var night:Float {lock.lock();defer{lock.unlock()};return nightValue}
     func setTheme(board:Int,pieces:Int) {
         lock.lock();defer{lock.unlock()}
         theme=(board==1 || pieces==1) ? 1:(pieces==0 ? board:pieces)
     }
     var appearance:(SIMD4<Float>,SIMD4<Float>) {
         lock.lock();defer{lock.unlock()}
+        let base=themeAppearance,n=nightValue
+        // Moon-lit cloud palette: ambient (0.040,0.055,0.10), lit (0.20,0.25,0.37); .w flags preserved.
+        let shadow=SIMD4(base.0.x+(0.040-base.0.x)*n,base.0.y+(0.055-base.0.y)*n,base.0.z+(0.10-base.0.z)*n,base.0.w)
+        let light=SIMD4(base.1.x+(0.20-base.1.x)*n,base.1.y+(0.25-base.1.y)*n,base.1.z+(0.37-base.1.z)*n,base.1.w)
+        return (shadow,light)
+    }
+    private var themeAppearance:(SIMD4<Float>,SIMD4<Float>) {
         switch theme {
         case 1:return (SIMD4(0.065,0.105,0.18,1),SIMD4(0.37,0.47,0.62,1))
         case 2:return (SIMD4(0.018,0.032,0.075,2),SIMD4(0.20,0.28,0.43,0))
@@ -70,6 +90,13 @@ final class CloudAtmosphereDynamics {
         lock.lock();defer{lock.unlock()}
         let dt=min(0.05,max(0,now-(last ?? now)));last=now
         if !paused {time += Float(dt);spring.advance(dt)}
+        if nightPending {nightStart=now;nightPending=false}
+        if let start=nightStart {
+            let t=Float(min(1,max(0,(now-start)/Self.nightTransition)))
+            let s=t*t*(3-2*t)
+            nightValue=nightFrom+(nightTarget-nightFrom)*s
+            if t>=1 {nightValue=nightTarget;nightStart=nil}
+        }
         // Four times the previous full touch response, including its cap.
         // Keeping the spring unchanged preserves its soft settling and timing.
         return (time,point,spring.offset*8)

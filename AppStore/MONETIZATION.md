@@ -6,7 +6,7 @@ Apple Pay). Product `com.maroon.CloudChess.unlimited.monthly` belongs to group
 other storefronts use Apple's localized prices and currency. The app always
 shows `Product.displayPrice`, and disables purchasing if Apple cannot load it.
 
-Free play allows three newly delivered puzzles in any rolling 60-minute window
+Free play allows six newly delivered puzzles in any rolling 60-minute window
 on this device. Each slot refills one hour after that puzzle was delivered.
 Opening instructions, retries, undo, backgrounding, and resuming the same saved
 puzzle do not consume another slot. Generation failures do not consume a slot.
@@ -30,7 +30,7 @@ catalog is copied only into the UI-test bundle, never the distributed app.
 ## Before accepting real payments
 
 - Owner must complete App Store Connect Business: legal entity/compliance,
-  Paid Apps Agreement, banking and tax forms. Owner chose to leave this pending.
+  Paid Apps Agreement, banking and tax forms. Owner reports further completion on October 8; current status could not be verified because browser access is blocked by its security-policy check.
 - Finish a real sandbox/TestFlight purchase, restoration, expiration, refund,
   cancellation, Ask to Buy and billing-retry/grace-period pass before release.
 - The actual paywall review screenshot is uploaded. Attach this first subscription
@@ -77,3 +77,7 @@ Evidence and final verification results are retained under reports/monetization.
   fresh-puzzle expectation. Largest-text paywall re-tested and visually checked
   after fixing truncated action labels. Signed Release 1.0 (3) installed and
   launched on the paired iPhone, preserving its existing game data.
+
+## Build 4 release preparation
+
+The signed 1.0 (4) archive and App Store IPA are under `reports/store-release/`. Eight real iPhone/iPad screenshots, a promotional banner, icon, draft listing copy and a visual review page are under `AppStore/Release-1.0-4/`. Both native screenshot tests passed; build 4 installed and launched on the phone. Nothing was uploaded or submitted in this preparation run. Subscription lifecycle testing and final App Store Connect declarations remain outstanding.

@@ -330,9 +330,17 @@ actor OnDeviceProfiles {
     private var stop=false
     private var pausedByUser=false
     private let config="ios-stockfish19-nn1a298aa575a0-allplies-2m-4m-v2"
+    /// A first import is bounded so a report arrives within minutes: the newest
+    /// games only, never the whole multi-year archive. Engine budgets are not
+    /// reduced; the report records `limited` so coverage stays honest.
+    static let initialImportGames=60
+    static let initialImportMonths=6
     private let session:URLSession
     init() {
-        let c=URLSessionConfiguration.ephemeral;c.timeoutIntervalForRequest=40;c.timeoutIntervalForResource=86400
+        let c=URLSessionConfiguration.ephemeral;c.timeoutIntervalForRequest=60;c.timeoutIntervalForResource=86400
+        #if DEBUG
+        if ProfileFixtureProtocol.directory != nil {c.protocolClasses=[ProfileFixtureProtocol.self]}
+        #endif
         session=URLSession(configuration:c)
     }
     private func store()throws->NativeProfileStore {
@@ -361,7 +369,7 @@ actor OnDeviceProfiles {
     func start(_ link:String,limit:Int?=nil)throws->[String:Any] {
         guard current==nil else {throw profileError("An analysis is already running")}
         let (provider,user)=try Self.identity(link),id=UUID().uuidString.lowercased()
-        let job:[String:Any]=["id":id,"account":provider+":"+user,"provider":provider,"username":user,"status":"queued","error":NSNull(),"limit":limit as Any? ?? NSNull(),"config":config]
+        let job:[String:Any]=["id":id,"account":provider+":"+user,"provider":provider,"username":user,"status":"queued","error":NSNull(),"limit":limit ?? Self.initialImportGames,"months":limit==nil ? Self.initialImportMonths:NSNull(),"config":config]
         try store().put("job",id,provider+":"+user,job);begin(job);return job
     }
     private func begin(_ job:[String:Any]) {
@@ -390,7 +398,12 @@ actor OnDeviceProfiles {
         if current==nil,["cancelled","interrupted"].contains(job["status"] as? String ?? ""),job["userPaused"] as? Bool != true {return try resume(id)}
         return job
     }
-    func pause(userInitiated:Bool=false) {
+    /// Only an explicit pause or the app entering the background stops work.
+    /// Mere inactivity (auto-lock, Control Center, app switcher) leaves the
+    /// download and analysis Task alive; its checkpoints make a later real
+    /// suspension resumable without refetching imported archives.
+    func pause(userInitiated:Bool=false,background:Bool=true) {
+        guard userInitiated || background else{return}
         stop=true;pausedByUser = pausedByUser || userInitiated;task?.cancel()
         // Do not globally stop the shared engine: it may currently be judging
         // a foreground challenge. Bounded searches finish; cancelled evidence
@@ -481,29 +494,46 @@ actor OnDeviceProfiles {
     private func update(_ original:[String:Any],_ status:String,_ extra:[String:Any]=[:])throws->[String:Any] {
         var job=original;job["status"]=status;for(k,v) in extra{job[k]=v};try store().put("job",job["id"] as! String,job["account"] as! String,job);return job
     }
-    private func request(_ url:URL,stream:Bool=false)async throws->(URLSession.AsyncBytes,HTTPURLResponse) {
+    private func prepared(_ url:URL,stream:Bool)->URLRequest {
+        var req=URLRequest(url:url);req.setValue("CloudChess/1.0 (on-device personal analysis)",forHTTPHeaderField:"User-Agent")
+        if stream{req.setValue("application/x-ndjson",forHTTPHeaderField:"Accept")}
+        return req
+    }
+    /// nil accepts the response; a value is the retry delay; errors are terminal.
+    private func retryDelay(_ response:URLResponse,url:URL,attempt:Int)throws->Double? {
+        guard let response=response as? HTTPURLResponse else{throw profileError("Invalid provider response")}
+        // Only the constructed provider endpoints may supply imported data.
+        guard response.url?.host==url.host else{throw profileError("Unexpected provider redirect")}
+        if response.statusCode==429 || response.statusCode>=500 {
+            guard attempt<5 else{throw profileError("Provider is busy. Resume later.")}
+            return max(response.statusCode==429 ? 60:2,Double(response.value(forHTTPHeaderField:"Retry-After") ?? "") ?? pow(2,Double(attempt)))
+        }
+        guard response.statusCode==200 else {throw profileError("Profile download returned \(response.statusCode)")}
+        return nil
+    }
+    /// Streaming is reserved for the Lichess NDJSON export, consumed line by line.
+    private func request(_ url:URL,stream:Bool=true)async throws->(URLSession.AsyncBytes,HTTPURLResponse) {
         for attempt in 0..<6 {
-            try check();var req=URLRequest(url:url);req.setValue("CloudChess/1.0 (on-device personal analysis)",forHTTPHeaderField:"User-Agent")
-            if stream{req.setValue("application/x-ndjson",forHTTPHeaderField:"Accept")}
-            let (bytes,response)=try await session.bytes(for:req)
-            guard let response=response as? HTTPURLResponse else{throw profileError("Invalid provider response")}
-            // Only the constructed provider endpoints may supply imported data.
-            guard response.url?.host==url.host else{throw profileError("Unexpected provider redirect")}
-            if response.statusCode==429 || response.statusCode>=500 {
-                bytes.task.cancel()
-                guard attempt<5 else{throw profileError("Provider is busy. Resume later.")}
-                let delay=max(response.statusCode==429 ? 60:2,Double(response.value(forHTTPHeaderField:"Retry-After") ?? "") ?? pow(2,Double(attempt)))
-                try await Task.sleep(for:.seconds(delay));continue
-            }
-            guard response.statusCode==200 else {bytes.task.cancel();throw profileError("Profile download returned \(response.statusCode)")}
-            return(bytes,response)
+            try check()
+            let (bytes,response)=try await session.bytes(for:prepared(url,stream:stream))
+            do {
+                if let delay=try retryDelay(response,url:url,attempt:attempt) {bytes.task.cancel();try await Task.sleep(for:.seconds(delay));continue}
+            } catch {bytes.task.cancel();throw error}
+            return(bytes,response as! HTTPURLResponse)
         }
         throw profileError("Profile download failed")
     }
+    /// Whole JSON bodies arrive in one buffer: byte-by-byte AsyncBytes
+    /// accumulation measured about fifty times slower per monthly archive.
     private func fetchJSON(_ url:URL)async throws->[String:Any] {
-        let(bytes,_)=try await request(url);var data=Data()
-        for try await byte in bytes {data.append(byte);if data.count>128_000_000{bytes.task.cancel();throw profileError("Archive too large")}}
-        return try jsonObject(data)
+        for attempt in 0..<6 {
+            try check()
+            let (data,response)=try await session.data(for:prepared(url,stream:false))
+            if let delay=try retryDelay(response,url:url,attempt:attempt) {try await Task.sleep(for:.seconds(delay));continue}
+            guard data.count<=128_000_000 else{throw profileError("Archive too large")}
+            return try jsonObject(data)
+        }
+        throw profileError("Profile download failed")
     }
     private func normalize(_ raw:[String:Any],_ job:[String:Any])async throws->[String:Any] {
         let user=job["username"] as! String,provider=job["provider"] as! String
@@ -529,10 +559,19 @@ actor OnDeviceProfiles {
         var job=original;let account=job["account"] as! String
         defer{current=nil;task=nil}
         do {
-            var received=job["received"] as? Int ?? 0,skipped=job["skipped"] as? Int ?? 0
-            let limit=job["limit"] as? Int
+            // Jobs saved before the first-import cap carry no limit and are
+            // bounded on resume; explicit test limits never gain a month cap.
+            let limit=job["limit"] as? Int ?? Self.initialImportGames
+            let months=job["months"] as? Int ?? (job["limit"] as? Int==nil ? Self.initialImportMonths:Int.max)
             if job["importComplete"] as? Bool != true {
-            job=try update(job,"importing");received=0;skipped=0
+            // The checkpoint is written only once its games are stored, so a
+            // resume continues after it instead of refetching from the top.
+            let checkpoint=job["importCheckpoint"] as? [String:Any]
+            var received=checkpoint?["received"] as? Int ?? 0,skipped=checkpoint?["skipped"] as? Int ?? 0
+            var archives=checkpoint?["archives"] as? [String] ?? []
+            var oldest=checkpoint?["oldest"] as? Double
+            var truncated=false
+            job=try update(job,"importing",["received":received,"skipped":skipped])
             func accept(_ raw:[String:Any])async throws {
                 try check();received+=1
                 var normalized:[String:Any]?
@@ -543,29 +582,44 @@ actor OnDeviceProfiles {
                     let key=account+":"+(game["id"] as! String)
                     try store().put("game",key,account,game,stamp:game["ended"] as! Double)
                 }
-                if received%10==0 {job=try update(job,"importing",["received":received,"skipped":skipped])}
             }
-            // Complete archives are always rechecked; engine evidence is keyed
-            // by normalized game content so corrected games cannot reuse labels.
+            // Engine evidence is keyed by normalized game content, so a
+            // re-imported archive cannot reuse labels for corrected games.
             if job["provider"] as! String=="lichess" {
-                var url=URLComponents(string:"https://lichess.org/api/games/user/"+(job["username"] as! String))!
-                url.queryItems=[URLQueryItem(name:"pgnInJson",value:"true"),URLQueryItem(name:"clocks",value:"true"),URLQueryItem(name:"opening",value:"true"),URLQueryItem(name:"ongoing",value:"false"),URLQueryItem(name:"finished",value:"true")]
-                if let limit{url.queryItems?.append(URLQueryItem(name:"max",value:String(limit)))}
-                let(bytes,_)=try await request(url.url!,stream:true)
-                for try await line in bytes.lines where !line.isEmpty {try await accept(jsonObject(Data(line.utf8)))}
+                if received<limit {
+                    var url=URLComponents(string:"https://lichess.org/api/games/user/"+(job["username"] as! String))!
+                    url.queryItems=[URLQueryItem(name:"pgnInJson",value:"true"),URLQueryItem(name:"clocks",value:"true"),URLQueryItem(name:"opening",value:"true"),URLQueryItem(name:"ongoing",value:"false"),URLQueryItem(name:"finished",value:"true"),URLQueryItem(name:"max",value:String(limit-received))]
+                    if let oldest {url.queryItems?.append(URLQueryItem(name:"until",value:String(Int64(oldest)-1)))}
+                    let(bytes,_)=try await request(url.url!,stream:true)
+                    for try await line in bytes.lines where !line.isEmpty {
+                        if received>=limit {break}
+                        let raw=try jsonObject(Data(line.utf8));try await accept(raw)
+                        if let stamp=raw["lastMoveAt"] as? Double {oldest=min(oldest ?? stamp,stamp)}
+                        if received%10==0 {job=try update(job,"importing",["received":received,"skipped":skipped,"importCheckpoint":["received":received,"skipped":skipped,"oldest":oldest as Any? ?? NSNull()]])}
+                    }
+                    bytes.task.cancel()
+                }
+                truncated=received>=limit
             } else {
                 let root="https://api.chess.com/pub/player/"+(job["username"] as! String)+"/games/"
                 let catalog=try await fetchJSON(URL(string:root+"archives")!)
                 for archive in (catalog["archives"] as? [String] ?? []).sorted().reversed() {
-                    try check();guard archive.hasPrefix(root),archive.dropFirst(root.count).range(of:#"^\d{4}/\d{2}$"#,options:.regularExpression) != nil else{throw profileError("Invalid archive URL")}
+                    try check()
+                    if received>=limit || archives.count>=months {truncated=true;break}
+                    guard archive.hasPrefix(root),archive.dropFirst(root.count).range(of:#"^\d{4}/\d{2}$"#,options:.regularExpression) != nil else{throw profileError("Invalid archive URL")}
+                    if archives.contains(archive) {continue}
                     let page=try await fetchJSON(URL(string:archive)!)
                     for game in (page["games"] as? [[String:Any]] ?? []).sorted(by:{($0["end_time"] as? Double ?? 0)>($1["end_time"] as? Double ?? 0)}) {
-                        if let limit,received>=limit{break};try await accept(game)
+                        if received>=limit{break};try await accept(game)
+                        if received%10==0 {job=try update(job,"importing",["received":received,"skipped":skipped])}
                     }
-                    if let limit,received>=limit{break}
+                    archives.append(archive)
+                    job=try update(job,"importing",["received":received,"skipped":skipped,"importCheckpoint":["received":received,"skipped":skipped,"archives":archives]])
                 }
             }
-            job=try update(job,"analysing",["received":received,"skipped":skipped,"limited":limit != nil,"importComplete":true])
+            job=try update(job,"analysing",["received":received,"skipped":skipped,"limited":truncated,"importComplete":true])
+            // An interim report makes imported ratings visible before analysis.
+            job=try publishReport(account,job:job,status:"analysing")
             }
             job=try update(job,"analysing")
             for key in try store().identifiers("game",account) {
@@ -588,15 +642,24 @@ actor OnDeviceProfiles {
                     job=try update(job,"analysing",["game":game["id"]!,"ply":i+1,"analysedGames":try store().count("complete",account)])
                 }
                 try store().put("complete",key,account,["hash":hash],stamp:game["ended"] as! Double)
+                // Each finished game refreshes the visible report while the
+                // remaining games are still being analysed at full budget.
+                job=try publishReport(account,job:job,status:"analysing",extra:["analysedGames":try store().count("complete",account)])
             }
             try check();job=try update(job,"modelling")
-            let report=try buildReport(account,job:job)
-            try check();let reportID=try fingerprint(report);try store().put("report",reportID,account,report)
-            _=try update(job,"completed",["report":reportID,"error":NSNull()])
+            _=try publishReport(account,job:job,status:"completed",extra:["error":NSNull()])
         } catch {
             let paused=stop || Task.isCancelled || error is CancellationError
-            _=try? update(job,paused ? "cancelled":"failed",["error":paused ? "Paused. Resume from the saved checkpoint.":error.localizedDescription,"userPaused":pausedByUser])
+            // Connectivity loss is a checkpointed interruption, not a failure.
+            let transient=(error as? URLError).map{[.timedOut,.notConnectedToInternet,.networkConnectionLost].contains($0.code)} ?? false
+            _=try? update(job,paused ? "cancelled":transient ? "interrupted":"failed",["error":paused || transient ? "Paused. Resume from the saved checkpoint.":error.localizedDescription,"userPaused":pausedByUser])
         }
+    }
+    private func publishReport(_ account:String,job:[String:Any],status:String,extra:[String:Any]=[:])throws->[String:Any] {
+        let report=try buildReport(account,job:job)
+        try check();let reportID=try fingerprint(report);try store().put("report",reportID,account,report)
+        var fields=extra;fields["report"]=reportID
+        return try update(job,status,fields)
     }
     private func analyse(_ game:[String:Any],index:Int)async throws->[String:Any] {
         let history=Array((game["moves"] as! [String]).prefix(index)),move=(game["moves"] as! [String])[index]
@@ -664,9 +727,57 @@ actor OnDeviceProfiles {
         }
         let now=games.map{$0["ended"] as? Double ?? 0}.max() ?? 0
         let model=NativeSkillModel.diagnose(sample,now:now)
-        return ["account":account,"version":config,"engine":"Stockfish 19 NNUE, on device, one thread, 64 MB hash","coverage":["importedGames":games.count,"analysedGames":try store().count("complete",account),"completeGameDecisions":total,"allAnalysedMoves":allMoves,"drills":try store().count("drill",account),"modelSampleDecisions":sample.count],"ratings":NativeSkillModel.ratings(games,now:now),"skills":model["skills"]!,"model":model,"summary":["mistakes":mistakes,"deepRechecks":deep],"import":["received":job["received"] ?? 0,"skipped":job["skipped"] ?? 0,"limited":job["limited"] ?? false],"trainingPrior":model["trainingPrior"]!,"limits":["Engine-defined mistakes, not human-validated diagnoses.","Performance estimates remain specific to site and time control; not puzzle or FIDE Elo.","Sparse and overlapping tags remain uncertain. All games analysed; statistical fitting samples at most 25,000 decisions.","Clock pressure and decision complexity are contextual estimates."]]
+        return ["account":account,"version":config,"engine":"Stockfish 19 NNUE, on device, one thread, 64 MB hash","coverage":["importedGames":games.count,"analysedGames":try store().count("complete",account),"completeGameDecisions":total,"allAnalysedMoves":allMoves,"drills":try store().count("drill",account),"modelSampleDecisions":sample.count],"ratings":NativeSkillModel.ratings(games,now:now),"skills":model["skills"]!,"model":model,"summary":["mistakes":mistakes,"deepRechecks":deep],"import":["received":job["received"] ?? 0,"skipped":job["skipped"] ?? 0,"limited":job["limited"] ?? false],"trainingPrior":model["trainingPrior"]!,"limits":["Engine-defined mistakes, not human-validated diagnoses.","Performance estimates remain specific to site and time control; not puzzle or FIDE Elo.","Sparse and overlapping tags remain uncertain. Every imported game is analysed before completion; statistical fitting samples at most 25,000 decisions.","Clock pressure and decision complexity are contextual estimates."]]
     }
 }
+
+#if DEBUG
+/// Offline provider stand-in for regressions. Bodies come from
+/// CC_PROFILE_FIXTURE_DIR/<host>/<path> through the real URLSession pipeline;
+/// Lichess exports honour `until`/`max` like the live endpoint. Never built
+/// into Release, and inert unless the environment variable is set.
+final class ProfileFixtureProtocol:URLProtocol {
+    private static let lock=NSLock()
+    private static var log:[String]=[]
+    private static var stallSeconds:TimeInterval=0
+    private static var chunking:(lines:Int,delay:TimeInterval)?
+    static var directory:String? {ProcessInfo.processInfo.environment["CC_PROFILE_FIXTURE_DIR"]}
+    static var requests:[String] {lock.lock();defer{lock.unlock()};return log}
+    static func configure(stall:TimeInterval=0,chunk:(lines:Int,delay:TimeInterval)?=nil) {lock.lock();stallSeconds=stall;chunking=chunk;lock.unlock()}
+    static func resetLog() {lock.lock();log=[];lock.unlock()}
+    override class func canInit(with request:URLRequest)->Bool {directory != nil}
+    override class func canonicalRequest(for request:URLRequest)->URLRequest {request}
+    override func startLoading() {
+        guard let url=request.url,let client,let directory=Self.directory else{return}
+        Self.lock.lock();Self.log.append(url.absoluteString);let stall=Self.stallSeconds,chunk=Self.chunking;Self.lock.unlock()
+        if stall>0 {Thread.sleep(forTimeInterval:stall)}
+        let file=URL(fileURLWithPath:directory).appendingPathComponent(url.host ?? "").appendingPathComponent(url.path)
+        guard var data=try? Data(contentsOf:file) else {
+            client.urlProtocol(self,didReceive:HTTPURLResponse(url:url,statusCode:404,httpVersion:nil,headerFields:nil)!,cacheStoragePolicy:.notAllowed)
+            client.urlProtocolDidFinishLoading(self);return
+        }
+        if url.host=="lichess.org",let items=URLComponents(url:url,resolvingAgainstBaseURL:false)?.queryItems {
+            let until=items.first{$0.name=="until"}.flatMap{Double($0.value ?? "")},limit=items.first{$0.name=="max"}.flatMap{Int($0.value ?? "")}
+            var lines=String(decoding:data,as:UTF8.self).split(separator:"\n").map(String.init).filter{!$0.isEmpty}
+            if let until {lines=lines.filter{((try? JSONSerialization.jsonObject(with:Data($0.utf8)) as? [String:Any])?["lastMoveAt"] as? Double ?? 0)<=until}}
+            if let limit {lines=Array(lines.prefix(limit))}
+            data=Data((lines.joined(separator:"\n")+"\n").utf8)
+        }
+        client.urlProtocol(self,didReceive:HTTPURLResponse(url:url,statusCode:200,httpVersion:nil,headerFields:["Content-Type":"application/json"])!,cacheStoragePolicy:.notAllowed)
+        if let chunk {
+            let bytes=[UInt8](data);var i=0
+            while i<bytes.count {
+                var j=i,lines=0
+                while lines<chunk.lines && j<bytes.count {if bytes[j]==10 {lines+=1};j+=1}
+                client.urlProtocol(self,didLoad:Data(bytes[i..<j]));i=j
+                if i<bytes.count {Thread.sleep(forTimeInterval:chunk.delay)}
+            }
+        } else {client.urlProtocol(self,didLoad:data)}
+        client.urlProtocolDidFinishLoading(self)
+    }
+    override func stopLoading() {}
+}
+#endif
 
 /// On-device Bayesian contextual logistic regression. Correlated tags share
 /// the same sparse design row; ridge priors and the full Hessian account for

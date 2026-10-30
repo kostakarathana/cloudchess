@@ -11,7 +11,7 @@ final class PuzzleCelebration {
     func play(in world:CloudScene) {
         clear();bursts+=1
         guard !world.reducedMotion else{return}
-        world.scene.rootNode.addChildNode(root)
+        world.scene.rootNode.addChildNode(root);world.boostRendering(for:2.7)
         let colors:[UIColor]=[.init(red:0.96,green:0.78,blue:0.47,alpha:1),.init(red:0.52,green:0.78,blue:0.79,alpha:1),.init(red:0.83,green:0.69,blue:0.85,alpha:1),.init(red:0.96,green:0.74,blue:0.71,alpha:1),.init(red:0.95,green:0.97,blue:1,alpha:1)]
         let geometries=colors.map {color->SCNGeometry in
             let g=SCNBox(width:0.075,height:0.012,length:0.15,chamferRadius:0.012)
@@ -48,7 +48,7 @@ final class PuzzleCelebration {
 
 extension CloudScene {
     func puzzleExit(duration requested:TimeInterval?=nil) {
-        onCancelDrag?();marks.childNodes.forEach{$0.removeFromParentNode()}
+        onCancelDrag?();marks.childNodes.forEach{$0.removeFromParentNode()};sideAnnouncement.clear()
         island.removeAction(forKey:"mistake-shake");island.position=SCNVector3Zero
         island.childNode(withName:"mistake-feedback",recursively:false)?.removeFromParentNode()
         island.removeAction(forKey:"puzzle-transition")
@@ -65,6 +65,7 @@ extension CloudScene {
         island.childNode(withName:"mistake-feedback",recursively:false)?.removeFromParentNode()
         island.opacity=0;island.position=SCNVector3(0,reducedMotion ? 0:-1.5,reducedMotion ? 0:0.2)
         let duration=reducedMotion ? 0.15:(requested ?? 0.65)
+        if !reducedMotion {boostRendering(for:duration+0.4)}
         let move=SCNAction.move(to:SCNVector3Zero,duration:duration);move.timingMode = .easeOut
         island.runAction(.group([move,.fadeIn(duration:duration)]),forKey:"puzzle-transition")
         if !reducedMotion {
@@ -102,6 +103,7 @@ extension CloudScene {
         // root is independent of move markers so a reply cannot erase the flash.
         island.removeAction(forKey:"mistake-shake")
         if !reducedMotion {
+            boostRendering(for:0.85)
             island.runAction(.sequence([.customAction(duration:0.46) {node,elapsed in
                 let t=Float(elapsed)/0.46
                 node.position.x=sin(t * .pi * 8)*0.085*pow(1-t,2)

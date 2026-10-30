@@ -3,13 +3,14 @@ import MetalKit
 
 struct CloudAtmosphere: UIViewRepresentable {
     var motion:Bool
+    var night:Bool=false
     let field:CloudAtmosphereDynamics
     @Environment(\.scenePhase) private var scenePhase
     func makeCoordinator()->Renderer {Renderer(field:field)}
     func makeUIView(context:Context)->CloudMetalView {
         let view=CloudMetalView(frame:.zero,device:context.coordinator.device)
         view.field=field;view.colorPixelFormat = .bgra8Unorm
-        view.isOpaque=true;view.backgroundColor=UIColor(red:0.86,green:0.91,blue:0.98,alpha:1)
+        view.isOpaque=true;view.backgroundColor=field.night>0.5 ? UIColor(red:0.12,green:0.15,blue:0.27,alpha:1):UIColor(red:0.86,green:0.91,blue:0.98,alpha:1)
         view.preferredFramesPerSecond=30;view.autoResizeDrawable=false
         view.delegate=context.coordinator;view.isAccessibilityElement=false
         return view
@@ -17,7 +18,9 @@ struct CloudAtmosphere: UIViewRepresentable {
     func updateUIView(_ view:CloudMetalView,context:Context) {
         let paused = !motion || scenePhase != .active
         field.setPaused(paused);view.isPaused=paused
-        if paused {view.draw()}
+        // A night change while paused (Motion off / Reduce Motion) is instant and
+        // needs exactly one redraw; `night` is stored so this update re-runs.
+        if paused || view.lastNight != night {view.lastNight=night;view.draw()}
     }
     final class Renderer:NSObject,MTKViewDelegate {
         let field:CloudAtmosphereDynamics
@@ -58,7 +61,7 @@ struct CloudAtmosphere: UIViewRepresentable {
             let aspect=Float(view.drawableSize.width/view.drawableSize.height)
             let appearance=field.appearance
             let eye=SceneComposition.eye,forward=SceneComposition.forward,up=SceneComposition.up,sun=SceneComposition.sun
-            var uniforms=Uniforms(screen:SIMD4(Float(view.drawableSize.width),Float(view.drawableSize.height),windTime,0),touch:SIMD4(frame.1.x,frame.1.y,0,0),wind:SIMD4(frame.2.x,frame.2.y,frame.2.z,0),eye:SIMD4(eye.x,eye.y,eye.z,SceneComposition.tangentHalfFOV(aspect:aspect)),forward:SIMD4(forward.x,forward.y,forward.z,0),up:SIMD4(up.x,up.y,up.z,0),sun:SIMD4(sun.x,sun.y,sun.z,0),board:field.boardLayout,shadow:appearance.0,light:appearance.1)
+            var uniforms=Uniforms(screen:SIMD4(Float(view.drawableSize.width),Float(view.drawableSize.height),windTime,0),touch:SIMD4(frame.1.x,frame.1.y,0,0),wind:SIMD4(frame.2.x,frame.2.y,frame.2.z,0),eye:SIMD4(eye.x,eye.y,eye.z,SceneComposition.tangentHalfFOV(aspect:aspect)),forward:SIMD4(forward.x,forward.y,forward.z,0),up:SIMD4(up.x,up.y,up.z,0),sun:SIMD4(sun.x,sun.y,sun.z,field.night),board:field.boardLayout,shadow:appearance.0,light:appearance.1)
             encoder.setRenderPipelineState(pipeline);encoder.setFragmentBytes(&uniforms,length:MemoryLayout<Uniforms>.stride,index:0);encoder.setFragmentTexture(noise,index:0)
             encoder.drawPrimitives(type:.triangle,vertexStart:0,vertexCount:3);encoder.endEncoding()
             #if DEBUG
@@ -88,6 +91,7 @@ struct CloudAtmosphere: UIViewRepresentable {
 }
 final class CloudMetalView:MTKView {
     weak var field:CloudAtmosphereDynamics?
+    var lastNight=false
     private var start=CGPoint.zero
     override func layoutSubviews() {
         super.layoutSubviews()
@@ -110,8 +114,11 @@ final class CloudMetalView:MTKView {
 
 /// The ordinary sky and the short foreground cloud journey share immutable GPU
 /// assets. Entering a transition never recompiles a shader or reloads 8 MB of noise.
-private final class CloudRenderResources {
+final class CloudRenderResources {
     static let shared=CloudRenderResources()
+    /// Builds the shared resources on a background queue; a later main-thread
+    /// `shared` access simply joins the one-time initialisation.
+    static func warm() {DispatchQueue.global(qos:.userInitiated).async {_ = CloudRenderResources.shared}}
     let device:MTLDevice,queue:MTLCommandQueue,pipeline:MTLRenderPipelineState,noise:MTLTexture
     private init() {
             guard let device=MTLCreateSystemDefaultDevice(),let queue=device.makeCommandQueue() else {fatalError("Metal unavailable")}

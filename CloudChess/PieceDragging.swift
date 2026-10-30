@@ -46,7 +46,13 @@ final class PieceDragController {
     private var spring=PieceDragSpring(position:.zero)
     private var target=SIMD3<Float>.zero
     private var offset=SIMD3<Float>.zero
-    private var hover:SCNNode?
+    // One halo per controller; it is attached while a drag is active.
+    private let hover:SCNNode={
+        let ring=SCNTorus(ringRadius:0.43,pipeRadius:0.023)
+        let material=SCNMaterial();material.lightingModel = .constant
+        material.diffuse.contents=UIColor(red:0.30,green:0.60,blue:0.73,alpha:0.85);ring.materials=[material]
+        let halo=SCNNode(geometry:ring);halo.categoryBitMask=2;halo.isHidden=true;return halo
+    }()
     var isActive:Bool {source != nil}
     private(set) var beganCount=0
     private(set) var maximumLift:Float=0
@@ -61,10 +67,8 @@ final class PieceDragController {
         piece.removeAllActions();piece.scale=SCNVector3(1,1,1)
         spring=PieceDragSpring(position:SIMD3(start.x,start.y,start.z))
         offset=SIMD3(start.x-ground.x,0,start.z-ground.z)
-        let ring=SCNTorus(ringRadius:0.43,pipeRadius:0.023)
-        let material=SCNMaterial();material.lightingModel = .constant
-        material.diffuse.contents=UIColor(red:0.30,green:0.60,blue:0.73,alpha:0.85);ring.materials=[material]
-        let halo=SCNNode(geometry:ring);halo.categoryBitMask=2;halo.isHidden=true;world.island.addChildNode(halo);hover=halo
+        hover.isHidden=true;world.island.addChildNode(hover)
+        world.setInteractive?(true)
         update(point:point)
         let display=CADisplayLink(target:frameTarget,selector:#selector(DragFrameTarget.tick(_:)))
         display.preferredFrameRateRange=CAFrameRateRange(minimum:30,maximum:60,preferred:60)
@@ -76,8 +80,8 @@ final class PieceDragController {
         let halfX=Float(world.dimensions.columns)/2+0.65,halfZ=Float(world.dimensions.rows)/2+0.65
         target=SIMD3(max(-halfX,min(halfX,p.x+offset.x)),world.reducedMotion ? 0.30:0.78,max(-halfZ,min(halfZ,p.z+offset.z)))
         if let square=world.square(x:p.x,z:p.z),let source=source,world.canDrop?(source,square)==true {
-            let q=world.position(square);hover?.position=SCNVector3(q.x,0.13,q.z);hover?.isHidden=false
-        } else {hover?.isHidden=true}
+            let q=world.position(square);hover.position=SCNVector3(q.x,0.13,q.z);hover.isHidden=false
+        } else {hover.isHidden=true}
     }
     fileprivate func tick(_ display:CADisplayLink) {
         guard isActive,let node=node,let world=world else{stop();return}
@@ -102,7 +106,10 @@ final class PieceDragController {
             settle(oldNode,to:world.position(oldSource),selected:world.selectedSquare==oldSource,animated:animated && !world.reducedMotion)
         }
     }
-    private func stop() {link?.invalidate();link=nil;lastTime=nil;source=nil;node=nil;hover?.removeFromParentNode();hover=nil}
+    private func stop() {
+        link?.invalidate();link=nil;lastTime=nil;source=nil;node=nil;hover.removeFromParentNode();hover.isHidden=true
+        world?.boostRendering(for:0.24) // settle animation, then the 0.8 s decay
+    }
     private func settle(_ piece:SCNNode,to point:SCNVector3,selected:Bool,animated:Bool) {
         piece.removeAllActions()
         let scale:CGFloat=selected ? 1.06:1

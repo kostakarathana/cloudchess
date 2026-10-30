@@ -3,7 +3,7 @@ import Foundation
 /// A rolling window. Session IDs make delivery retry/relaunch idempotent.
 struct PuzzleAllowance: Codable {
     struct Entry: Codable { let session: String; let date: Date }
-    static let limit = 3
+    static let limit = 6
     static let interval: TimeInterval = 3600
     private(set) var entries: [Entry] = []
     private(set) var lastSession: String?

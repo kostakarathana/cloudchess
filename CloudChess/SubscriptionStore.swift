@@ -37,7 +37,7 @@ import Security
         } catch { message = "Your free puzzles couldn’t be loaded. Please try again." }
         #if DEBUG
         if ProcessInfo.processInfo.arguments.contains("--quota-exhausted"), testDefaults != nil {
-            for n in 0..<3 { allowance.admit(session: "fixture-\(n)", unlimited: false, at: now) }
+            for n in 0..<6 { allowance.admit(session: "fixture-\(n)", unlimited: false, at: now) }
             try? persist(allowance)
         }
         #endif
@@ -143,12 +143,26 @@ import Security
         } catch { storageReady = false; message = "Your free puzzles couldn’t be loaded. Please try again." }
         await refreshEntitlements(); await loadProduct()
     }
-    func admit(session: String) throws {
-        guard storageReady else { throw AccessError.storage }
-        var next = allowance
-        guard next.admit(session: session, unlimited: unlimited || bypassAllowance, at: now) else { throw AccessError.exhausted }
-        try persist(next) // Never grant a new puzzle if durable storage fails.
-        allowance = next
+    private var admission: Task<Void, Error>?
+    /// Admissions are serialized; the Keychain write runs on a utility queue so
+    /// securityd IPC never sits on the main actor during a handoff. The ledger is
+    /// only updated after that write succeeds (never grant on storage failure),
+    /// and `PuzzleAllowance.admit` stays idempotent per session ID.
+    func admit(session: String) async throws {
+        let previous = admission
+        let task = Task<Void, Error> { [self] in
+            _ = try? await previous?.value
+            guard storageReady else { throw AccessError.storage }
+            var next = allowance
+            guard next.admit(session: session, unlimited: unlimited || bypassAllowance, at: now) else { throw AccessError.exhausted }
+            let data = try JSONEncoder().encode(next)
+            let key = self.key, defaults = testDefaults, service = self.service
+            try await Task.detached(priority: .utility) { try Self.writeLedger(data, key: key, defaults: defaults, service: service) }.value
+            allowance = next
+        }
+        admission = task
+        defer { if admission == task { admission = nil } }
+        try await task.value
     }
     enum AccessError: Error { case exhausted, storage }
     private var key: [String: Any] { [kSecClass as String:kSecClassGenericPassword, kSecAttrService as String:service, kSecAttrAccount as String:"allowance"] }
@@ -162,8 +176,10 @@ import Security
         return data
     }
     private func persist(_ ledger: PuzzleAllowance) throws {
-        let data = try JSONEncoder().encode(ledger)
-        if let testDefaults { testDefaults.set(data, forKey: service); return }
+        try Self.writeLedger(try JSONEncoder().encode(ledger), key: key, defaults: testDefaults, service: service)
+    }
+    nonisolated private static func writeLedger(_ data: Data, key: [String: Any], defaults: UserDefaults?, service: String) throws {
+        if let defaults { defaults.set(data, forKey: service); return }
         let status = SecItemUpdate(key as CFDictionary, [kSecValueData as String:data] as CFDictionary)
         if status == errSecItemNotFound {
             var item = key; item[kSecValueData as String] = data
@@ -227,7 +243,7 @@ struct UnlimitedPuzzlePanel: View {
             Text(premium ? "Premium" : "Free").font(.headline)
             Image(systemName: premium ? "infinity" : "cloud")
                 .font(.system(size:30,weight:.medium)).frame(height:36).accessibilityHidden(true)
-            Text(premium ? "Infinite puzzles" : "3 puzzles / hour")
+            Text(premium ? "Infinite puzzles" : "6 puzzles / hour")
                 .font(.subheadline.weight(.semibold)).frame(height:56)
             Group {
                 if premium {

@@ -28,7 +28,7 @@ struct PositionState:Codable {
     }
     private func admitCurrentPuzzle() async throws {
         guard let session=coach.session,session.requiresAdmission==true else { return }
-        try subscription.admit(session:session.id)
+        try await subscription.admit(session:session.id)
         coach.session?.requiresAdmission=false
         try await save()
     }
@@ -45,6 +45,17 @@ struct PositionState:Codable {
     @Published private(set) var evaluationActivity:String?
     private var mistakeFeedbackCount=0
     private var outcomeHapticCount=0
+    // One prepared generator each; per-placement allocation stuttered pickups.
+    private let impactHaptic=UIImpactFeedbackGenerator(style:.soft)
+    private let outcomeHapticGenerator=UINotificationFeedbackGenerator()
+    // The post-reply guide runs concurrently with the unlocked board. Writes are
+    // gated on the exact session and history; hints/speculation await it.
+    private var guideTask:Task<Void,Never>?
+    // Landing bookkeeping so completion waits only the unelapsed remainder.
+    private var lastLandingStarted:TimeInterval=0
+    private var lastLandingDuration:TimeInterval=0
+    private var landingRemainder:TimeInterval {max(0,lastLandingDuration-(ProcessInfo.processInfo.systemUptime-lastLandingStarted))}
+    private func noteLanding(_ duration:TimeInterval) {lastLandingStarted=ProcessInfo.processInfo.systemUptime;lastLandingDuration=duration}
     private func scoreChanged(from previous:Double) {
         guard liveScore != previous else{return}
         scoreDirection=liveScore>previous ? 1:-1;scoreFeedbackID+=1
@@ -53,7 +64,7 @@ struct PositionState:Codable {
     private func outcomeHaptic(success:Bool) {
         guard foreground else{return}
         outcomeHapticCount+=1
-        if sound {UINotificationFeedbackGenerator().notificationOccurred(success ? .success:.warning)}
+        if sound {outcomeHapticGenerator.notificationOccurred(success ? .success:.warning)}
     }
     private func mistakeFeedback(at square:String,scoreBefore:Double) {
         mistakeFeedbackCount+=1
@@ -75,6 +86,7 @@ struct PositionState:Codable {
     private var journeyWatchdog:Task<Void,Never>?
     let journeyClouds=CloudAtmosphereDynamics()
     private var journeyEntered=false
+    private var sideAnnouncementPending=false
     private var lastJourneyDuration:Double=0
     private var journeyFallbacks=0
     var journeyActive:Bool {journeyStarted != nil}
@@ -123,7 +135,7 @@ struct PositionState:Codable {
         await generationProgress(10)
         if let started=journeyStarted {
             // A fixed cinematic window, never fabricated generation progress.
-            let remaining=(world.reducedMotion ? 0.12:0.7)-Date().timeIntervalSince(started)
+            let remaining=(world.reducedMotion ? 0.12:0.55)-Date().timeIntervalSince(started)
             if remaining>0 {try await wait(remaining)}
             journeyWatchdog?.cancel();journeyWatchdog=nil
             if foreground && !showReturn {
@@ -131,9 +143,9 @@ struct PositionState:Codable {
                 // Wait two display frames before uncovering it; no transparent
                 // entrance is racing the cloud opening or the loader's removal.
                 world.settleForInstructions();boardRevealed=true;journeyEntered=true
-                await Task.yield();try await wait(0.05)
+                await Task.yield();try await wait(0.03)
                 journeyFallback=false;isGenerating=false;journeyReveal=Date()
-                try await wait(world.reducedMotion ? 0.18:0.5)
+                try await wait(world.reducedMotion ? 0.18:0.4)
             } else {journeyFallback=false;isGenerating=false}
             lastJourneyDuration=Date().timeIntervalSince(started)
             journeyStarted=nil;journeyReveal=nil
@@ -159,8 +171,8 @@ struct PositionState:Codable {
         }
         phase="journey"
         // The veil closes in 350 ms. Retain the full outgoing board until then.
+        // No exit animation: the board is concealed as soon as generation begins.
         try await wait(world.reducedMotion ? 0.13:0.38)
-        world.puzzleExit(duration:0.12)
         try await nextPuzzle()
     }
     private struct PreparedPuzzle {
@@ -193,7 +205,8 @@ struct PositionState:Codable {
     }
     var evaluationPending:Bool {evaluationActivity != nil || (challengeKind == .tenMoves && phase=="playing" && openAssessment==nil)}
     private func stopPreparation(clear:Bool=false,keepingTurn:Bool=false,source:String?=nil,move:String?=nil) {
-        preparationToken=UUID();preparationTask?.cancel();preparationTask=nil
+        preparationToken=UUID();preparationTask?.cancel();preparationTask=nil;preparingNext=false
+        if clear {guideTask?.cancel();guideTask=nil}
         if keepingTurn,let p=puzzle {
             let history=state.moves
             let known=preparedTurnKey==turnKey(p,history) ? Set(preparedTurn.keys):[]
@@ -302,6 +315,10 @@ struct PositionState:Codable {
                         }
                     } else if !nextOnly && speculate && active.kind == .tactics {
                         // Tactical grading and its defense can also be ready before a drop.
+                        // The post-reply guide may still be running; wait for it rather than
+                        // reading an empty winning list.
+                        if self.guide["winning"]==nil,let pending=self.guideTask {await pending.value}
+                        guard self.preparationToken==token,self.state.moves==history,self.puzzle?.id==active.id else{throw CancellationError()}
                         let winners=Array((self.guide["winning"] as? [String] ?? []).prefix(2))
                         for move in winners {
                             var judge=active.request("judge",moves:history);judge["candidate"]=move;judge["budget"]=1_000_000
@@ -323,7 +340,10 @@ struct PositionState:Codable {
                 guard speculate,prepareNext,!Task.isCancelled,self.preparationToken==token else{return}
                 // Allow the current move/entrance to settle before filling the
                 // next-puzzle buffer. No competing Stockfish instance is started.
-                do {try await Task.sleep(nanoseconds:300_000_000)}catch{return}
+                // The celebration already provides that pause for nextOnly.
+                if !nextOnly {do {try await Task.sleep(nanoseconds:300_000_000)}catch{return}}
+                guard self.preparationToken==token else{return}
+                self.preparingNext=true
                 var forecast=snapshot
                 if forecast.session?.recorded==false {_ = forecast.finish()}
                 self.preparedPuzzles=self.preparedPuzzles.filter {kind,entry in
@@ -385,7 +405,21 @@ struct PositionState:Codable {
                     } catch {if Task.isCancelled || epoch != CCBackgroundEpoch(){break}}
                 }
             }
-            if self.preparationToken==token {self.preparationTask=nil}
+            if self.preparationToken==token {self.preparationTask=nil;self.preparingNext=false}
+        }
+    }
+    /// True once the preparation task has finished current-turn speculation and
+    /// is only filling the next-puzzle buffer; that work survives a journey start.
+    private var preparingNext=false
+    /// Waits for in-flight next-puzzle preparation, bounded. Awaiting `.value`
+    /// never cancels the preparation itself; the caller still revalidates.
+    private func awaitNextPreparation(upTo seconds:Double) async {
+        guard preparingNext,let task=preparationTask else{return}
+        _ = await withTaskGroup(of:Bool.self) { group in
+            group.addTask { await task.value;return true }
+            group.addTask { try? await Task.sleep(nanoseconds:UInt64(seconds*1_000_000_000));return false }
+            let first=await group.next() ?? false
+            group.cancelAll();return first
         }
     }
     private func takePrepared(_ kind:ChallengeKind,parents:[TrainingPuzzle]=[])->PreparedPuzzle? {
@@ -423,6 +457,9 @@ struct PositionState:Codable {
     }
     @Published var sound:Bool {didSet{UserDefaults.standard.set(sound,forKey:"cloudchess.sound")}}
     @Published var motion:Bool {didSet{UserDefaults.standard.set(motion,forKey:"cloudchess.motion")}}
+    // Synchronous so both renderers hold the new amount before SwiftUI's one-shot
+    // paused Metal redraw runs for this same change.
+    @Published var night:Bool {didSet{styleDefaults.set(night,forKey:"cloudchess.night");configureNight()}}
     @Published private(set) var boardStyle=BoardStyle.ocean
     let world=CloudScene()
     private let styleDefaults:UserDefaults,store:PuzzleCoachStore
@@ -436,7 +473,16 @@ struct PositionState:Codable {
     private var openAssessment:EngineAssessment?
     private var moveQueued=false,foreground=true,overlay=false
     private var systemReducedMotion=false
-    func configureMotion(reduced:Bool) {systemReducedMotion=reduced;world.setMotion(reduced || !motion);if (reduced || !motion) && replayPlaying {toggleReplay()}}
+    func configureMotion(reduced:Bool) {systemReducedMotion=reduced;world.setMotion(reduced || !motion);if (reduced || !motion) && replayPlaying {toggleReplay()};configureNight(animated:false)}
+    /// One night amount for both renderers: a 0.5 s smoothstep when motion is
+    /// allowed, instant under Reduce Motion or Cloud motion off.
+    func configureNight(animated:Bool=true) {
+        let instant=systemReducedMotion || !motion
+        let amount:Float=night ? 1:0
+        world.setNight(amount,animated:animated && !instant)
+        world.cloudField.setNight(amount,animated:animated && !instant)
+        journeyClouds.setNight(amount,animated:false)
+    }
     private var clockStarted:TimeInterval?
     private var ticker:Task<Void,Never>?
     #if DEBUG
@@ -448,16 +494,17 @@ struct PositionState:Codable {
     var blunderStage:String {coach.session?.blunderPly==nil ? "Stay balanced":"Keep the advantage · \(blunderProgress) / 3"}
     var remaining:Int {coach.session?.recorded==true ? 0:max(0,(puzzle?.solverMoves ?? 1)-(state.moves.count+1)/2)}
     var diagnostic:String {
-        "generationWorkMs:\(generationWorkMilliseconds),generationFullMs:\(generationFullMilliseconds),errorDetail:\((error ?? "").replacingOccurrences(of:",",with:";").replacingOccurrences(of:"\n",with:" ")),searchExecuted:\(NativeChess.searchMetrics["executed"] ?? 0),searchJoined:\(NativeChess.searchMetrics["joined"] ?? 0),searchPreserved:\(NativeChess.searchMetrics["preserved"] ?? 0),lastJourneyMs:\(Int(lastJourneyDuration*1000)),journeyFallbacks:\(journeyFallbacks),hintMarks:\(world.marks.childNodes.count),boardMatches:\(world.symbols==CloudScene.decode(state.fen).filter{dimensions.position($0.key) != nil} ? 1:0),journey:\(journeyActive ? 1:0),journeyFallback:\(journeyFallback ? 1:0),replay:\(replayActive ? 1:0),replayIndex:\(replayIndex),replayCount:\(replayCount),hintStage:\(coach.session?.hintStage ?? 0),hintDiscounts:\(coach.session?.hintDiscounts ?? 0),moveGrade:\(world.moveQuality.lastQuality),gradeEvents:\(world.moveQuality.events),gradeSquare:\(world.moveQuality.square),judgmentAnswer:\(puzzle?.judgment?.verdict.rawValue ?? ""),blunderPly:\(coach.session?.blunderPly ?? -1),blunderProgress:\(blunderProgress),challengeLevel:\(Int(coach.challengeLevel(challengeKind))),opponent:\(Int(coach.session?.opponentElo ?? 0)),modeAbility:\(Int(coach.modeAbility(challengeKind))),targetRating:\(Int(coach.targetRating(for:challengeKind))),scoreEvents:\(scoreFeedbackID),scoreDirection:\(scoreDirection),mistakeFeedback:\(mistakeFeedbackCount),outcomeHaptics:\(outcomeHapticCount),evaluating:\(evaluationActivity == nil ? 0:1)," +
+        "generationWorkMs:\(generationWorkMilliseconds),generationFullMs:\(generationFullMilliseconds),errorDetail:\((error ?? "").replacingOccurrences(of:",",with:";").replacingOccurrences(of:"\n",with:" ")),searchExecuted:\(NativeChess.searchMetrics["executed"] ?? 0),searchJoined:\(NativeChess.searchMetrics["joined"] ?? 0),searchPreserved:\(NativeChess.searchMetrics["preserved"] ?? 0),lastJourneyMs:\(Int(lastJourneyDuration*1000)),journeyFallbacks:\(journeyFallbacks),hintMarks:\(world.marks.childNodes.count),boardMatches:\(world.symbols==CloudScene.decode(state.fen).filter{dimensions.position($0.key) != nil} ? 1:0),journey:\(journeyActive ? 1:0),journeyFallback:\(journeyFallback ? 1:0),replay:\(replayActive ? 1:0),replayIndex:\(replayIndex),replayCount:\(replayCount),hintStage:\(coach.session?.hintStage ?? 0),hintDiscounts:\(coach.session?.hintDiscounts ?? 0),moveGrade:\(world.moveQuality.lastQuality),gradeEvents:\(world.moveQuality.events),gradeSquare:\(world.moveQuality.square),judgmentAnswer:\(puzzle?.judgment?.verdict.rawValue ?? ""),blunderPly:\(coach.session?.blunderPly ?? -1),blunderProgress:\(blunderProgress),challengeLevel:\(Int(coach.challengeLevel(challengeKind))),opponent:\(Int(coach.session?.opponentElo ?? 0)),modeAbility:\(Int(coach.modeAbility(challengeKind))),targetRating:\(Int(coach.targetRating(for:challengeKind))),scoreEvents:\(scoreFeedbackID),scoreDirection:\(scoreDirection),mistakeFeedback:\(mistakeFeedbackCount),outcomeHaptics:\(outcomeHapticCount),evaluating:\(evaluationActivity == nil ? 0:1),cooldowns:\(coach.activeCooldowns().count)," +
         "freeRemaining:\(subscription.remaining),unlimited:\(subscription.unlimited ? 1:0),hearts:\(coach.remainingHearts),best:\(Int(coach.scoring?.best ?? 0)),generating:\(isGenerating ? 1:0),generationStep:\(generationStep),contents:\(collection.pending?.shards.count ?? 0),undos:\(coach.session?.undoCount ?? 0),reward:\(Int(puzzleReward))," +
-        "lastTurnMs:\(lastTurnMilliseconds),preparedReplyUsed:\(preparedReplyUsed),preparedReplies:\(preparedReplies.count),preparedMoves:\(preparedMoves),preparedMoveUsed:\(preparedMoveUsed),preparedReady:\(preparedReady),preparedUsed:\(preparedUsed),pendingMove:\(pendingMove ?? ""),visibleSquares:\(world.symbols.keys.sorted().joined(separator:"|")),rewardPicks:\(collection.pending?.choices.count ?? 0),rewardChosen:\((collection.pending?.choices ?? []).map(String.init).joined(separator:"|")),rewardOwned:\(collection.quantities.values.reduce(0,+)),profileSaved:\(UserDefaults(suiteName:"com.maroon.CloudChess.profile-tests")!.object(forKey:"cloudchess.profileLink")==nil ? 0:1),profileFile:\(FileManager.default.fileExists(atPath:FileManager.default.urls(for:.applicationSupportDirectory,in:.userDomainMask)[0].appendingPathComponent("CloudChess/profiles.sqlite3").path) ? 1:0),motion:\(motion ? 1:0),boardTheme:\(collection.selectedBoard),pieceTheme:\(collection.selectedPieces),ownedBoards:\(collection.masks.count),collectionSolved:\(collection.successes),rewardBoard:\(collection.pending == nil ? 0:1),winning:\((guide["winning"] as? [String] ?? []).joined(separator:"|")),instructionType:\(instructionType),revealed:\(boardRevealed ? 1:0),kind:\(challengeKind.rawValue),cp:\(Int(coach.session?.evaluation ?? 0)),score:\(Int(liveScore)),selected:\(selected ?? ""),moves:\(state.moves.count),error:\(error == nil ? 0:1),itemRating:\(Int(puzzle?.rating ?? 0)),difficulty:\(puzzle?.difficultyVersion ?? "legacy"),side:\(solverWhite ? "white":"black"),phase:\(phase),ready:\(!busy && phase=="playing" && !showReturn ? 1:0),completed:\(coach.total),mistakes:\(coach.session?.mistakes ?? 0),hints:\(coach.session?.hints ?? 0),rating:\(Int(coach.ability.mean)),id:\(puzzle?.id ?? ""),next:\((guide["line"] as? [String])?.first ?? ""),legal:\(state.legal.joined(separator:"|")),confetti:\(world.celebration.count),bursts:\(world.celebration.bursts)"
+        "lastTurnMs:\(lastTurnMilliseconds),preparedReplyUsed:\(preparedReplyUsed),preparedReplies:\(preparedReplies.count),preparedMoves:\(preparedMoves),preparedMoveUsed:\(preparedMoveUsed),preparedReady:\(preparedReady),preparedUsed:\(preparedUsed),pendingMove:\(pendingMove ?? ""),visibleSquares:\(world.symbols.keys.sorted().joined(separator:"|")),rewardPicks:\(collection.pending?.choices.count ?? 0),rewardChosen:\((collection.pending?.choices ?? []).map(String.init).joined(separator:"|")),rewardOwned:\(collection.quantities.values.reduce(0,+)),profileSaved:\(UserDefaults(suiteName:"com.maroon.CloudChess.profile-tests")!.object(forKey:"cloudchess.profileLink")==nil ? 0:1),profileFile:\(FileManager.default.fileExists(atPath:FileManager.default.urls(for:.applicationSupportDirectory,in:.userDomainMask)[0].appendingPathComponent("CloudChess/profiles.sqlite3").path) ? 1:0),night:\(night ? 1:0),sideText:\(world.sideAnnouncement.events),sideVisible:\(world.sideAnnouncement.visible ? 1:0),motion:\(motion ? 1:0),boardTheme:\(collection.selectedBoard),pieceTheme:\(collection.selectedPieces),ownedBoards:\(collection.masks.count),collectionSolved:\(collection.successes),rewardBoard:\(collection.pending == nil ? 0:1),winning:\((guide["winning"] as? [String] ?? []).joined(separator:"|")),instructionType:\(instructionType),revealed:\(boardRevealed ? 1:0),kind:\(challengeKind.rawValue),cp:\(Int(coach.session?.evaluation ?? 0)),score:\(Int(liveScore)),selected:\(selected ?? ""),moves:\(state.moves.count),error:\(error == nil ? 0:1),itemRating:\(Int(puzzle?.rating ?? 0)),difficulty:\(puzzle?.difficultyVersion ?? "legacy"),side:\(solverWhite ? "white":"black"),phase:\(phase),ready:\(!busy && phase=="playing" && !showReturn && guideTask==nil ? 1:0),completed:\(coach.total),mistakes:\(coach.session?.mistakes ?? 0),hints:\(coach.session?.hints ?? 0),rating:\(Int(coach.ability.mean)),id:\(puzzle?.id ?? ""),next:\((guide["line"] as? [String])?.first ?? ""),legal:\(state.legal.joined(separator:"|")),confetti:\(world.celebration.count),bursts:\(world.celebration.bursts)"
     }
     init() {
         NativeChess.setGameplayActive(true)
         styleDefaults=testing ? UserDefaults(suiteName:"com.maroon.CloudChess.uitests")!:UserDefaults.standard
-        if testing && !ProcessInfo.processInfo.arguments.contains("--preserve-style") {styleDefaults.removeObject(forKey:"cloudchess.boardStyle")}
+        if testing && !ProcessInfo.processInfo.arguments.contains("--preserve-style") {styleDefaults.removeObject(forKey:"cloudchess.boardStyle");styleDefaults.removeObject(forKey:"cloudchess.night")}
         sound=testing ? false:(UserDefaults.standard.object(forKey:"cloudchess.sound") as? Bool ?? true)
         motion=testing ? !ProcessInfo.processInfo.arguments.contains("--reduced-motion"):(UserDefaults.standard.object(forKey:"cloudchess.motion") as? Bool ?? true)
+        night=(testing && ProcessInfo.processInfo.arguments.contains("--night")) || styleDefaults.bool(forKey:"cloudchess.night")
         store=PuzzleCoachStore(testing:testing)
         if testing && !ProcessInfo.processInfo.arguments.contains("--preserve-coach") {try? FileManager.default.removeItem(at:store.url)}
         do {coach=try store.load()} catch {self.error=error.localizedDescription}
@@ -504,6 +551,10 @@ struct PositionState:Codable {
         world.onDragBegin={ [weak self] in self?.beginDrag($0) ?? false }
         world.canDrop={ [weak self] in self?.canDrop(from:$0,to:$1) ?? false }
         world.onDrop={ [weak self] in self?.drop(from:$0,to:$1) ?? false }
+        configureNight(animated:false)
+        // Compile the cloud shader and upload its density off the main thread
+        // now, so the first SwiftUI body does not wait for them.
+        CloudRenderResources.warm()
     }
     deinit {ticker?.cancel();replayTask?.cancel();journeyWatchdog?.cancel()}
     func setBoardStyle(_ style:BoardStyle) {
@@ -524,7 +575,7 @@ struct PositionState:Codable {
         if foreground && !replayActive && !overlay && !busy && !showInfo && !showReturn && boardRevealed && phase=="playing" && coach.session?.recorded==false && clockStarted==nil {clockStarted=ProcessInfo.processInfo.systemUptime}
     }
     func setActive(_ active:Bool) {
-        if !active {closeReplay();showHint=false;stopPreparation();world.moveQuality.clear()}
+        if !active {closeReplay();showHint=false;stopPreparation();world.moveQuality.clear();world.sideAnnouncement.clear();sideAnnouncementPending=false}
         pauseClock();foreground=active;NativeChess.setGameplayActive(active && !overlay);checkpoint();resumeClock()
         if active {Task{await refreshConnectedProfile()}}
     }
@@ -533,11 +584,11 @@ struct PositionState:Codable {
         pauseClock();foreground=false;NativeChess.setGameplayActive(false)
         if puzzle != nil {
             showReturn=true;showInfo=false;boardRevealed=false
-            world.onCancelDrag?()
+            world.onCancelDrag?();world.sideAnnouncement.clear();sideAnnouncementPending=false
         }
         checkpoint(flush:true)
     }
-    func setOverlay(_ visible:Bool) {if visible {stopPreparation()};pauseClock();overlay=visible;if !visible{loadProfilePrior()};checkpoint();resumeClock()}
+    func setOverlay(_ visible:Bool) {if visible {stopPreparation()};pauseClock();overlay=visible;if !visible{loadProfilePrior()};checkpoint();resumeClock();if !visible {presentSideAnnouncement()}}
     private func checkpoint(flush:Bool=false) {
         // Background is the durability barrier. Ordinary HUD/collection changes
         // enqueue synchronously in mutation order, then return to animation.
@@ -553,9 +604,15 @@ struct PositionState:Codable {
             store.enqueue(coach) {continuation.resume(with:$0)}
         }
     }
+    private var profilePriorCache:(hash:Int,report:[String:Any])?
     private func loadProfilePrior() {
         let defaults=testing ? UserDefaults(suiteName:"com.maroon.CloudChess.profile-tests")!:UserDefaults.standard
-        if let data=defaults.data(forKey:"cloudchess.profileReport"),let report=(try? JSONSerialization.jsonObject(with:data)) as? [String:Any] {coach.importProfile(report)}
+        guard let data=defaults.data(forKey:"cloudchess.profileReport") else{return}
+        // The saved report is parsed once per content; every new puzzle reuses it.
+        let hash=data.hashValue
+        if let cached=profilePriorCache,cached.hash==hash {coach.importProfile(cached.report);return}
+        guard let report=(try? JSONSerialization.jsonObject(with:data)) as? [String:Any] else{return}
+        profilePriorCache=(hash,report);coach.importProfile(report)
     }
     private var importedReportKey:String?
     private func refreshConnectedProfile() async {
@@ -563,7 +620,7 @@ struct PositionState:Codable {
         guard let id=defaults.string(forKey:"cloudchess.profileJob") else{return}
         do {
             let status=try await OnDeviceProfiles.shared.upgradeIfNeeded(id)
-            if status["status"] as? String=="completed" {
+            if let reportID=status["report"] as? String,!reportID.isEmpty {
                 let key=id+"|"+(status["report"] as? String ?? "")
                 guard importedReportKey != key else{return}
                 let report=try await OnDeviceProfiles.shared.report(id)
@@ -577,7 +634,6 @@ struct PositionState:Codable {
         }
     }
     func start() async {
-        await subscription.start()
         #if DEBUG
         if testing,ProcessInfo.processInfo.arguments.contains("--smoothness-audit"),smoothnessAudit==nil {
             smoothnessAudit=MainThreadPulseAudit { [weak self] in
@@ -602,10 +658,15 @@ struct PositionState:Codable {
             if testing,ProcessInfo.processInfo.arguments.contains("--art-audit") {await CollectionArt.audit()}
             #endif
             await generationProgress(1)
+            // StoreKit reconciliation, the bank decode and shared artwork warm-up
+            // are independent; none waits for the others on the cold path.
+            async let access:Void = subscription.start()
+            async let sharedAssets:Void = CollectionArt.prepareShared(board:displayedBoard,pieces:displayedPieces)
             if bank.isEmpty {
                 guard let url=Bundle.main.url(forResource:"puzzles",withExtension:"json",subdirectory:"EngineResources") else{throw failure("Missing offline puzzle bank")}
                 bank=try await Task.detached(priority:.userInitiated){try JSONDecoder().decode([TrainingPuzzle].self,from:Data(contentsOf:url))}.value
             }
+            await access;await sharedAssets
             if showReturn {return}
             coach.migrateDifficulty()
             #if DEBUG
@@ -633,7 +694,7 @@ struct PositionState:Codable {
                     if let tags=response["tags"] as? [String] {coach.session?.puzzle.tags=tags}
                     try await complete()
                 }
-                else {try await continueDefense();phase="playing";enterBoard();try await wait(0.02);introduce()}
+                else {try await continueDefense();phase="playing";let entrance=enterBoard();introduce();revealSide(delay:entrance)}
             } else {try await nextPuzzle()}
 
         } catch {handle(error)}
@@ -648,8 +709,12 @@ struct PositionState:Codable {
     }
     private func generateNextPuzzle() async throws {
         closeReplay();showHint=false
-        stopPreparation()
-        evaluationActivity=nil;world.moveQuality.clear()
+        // Preparation that already reached the next-puzzle phase is kept alive
+        // for a bounded wait instead of being discarded and redone here. Its
+        // result still passes takePrepared's PreparedChallengeGate revalidation.
+        if preparedPuzzles[.tactics]==nil {await awaitNextPreparation(upTo:1.2)}
+        stopPreparation();guideTask?.cancel();guideTask=nil
+        evaluationActivity=nil;world.moveQuality.clear();world.sideAnnouncement.clear();sideAnnouncementPending=false
         generationStartedAt=ProcessInfo.processInfo.systemUptime
         isGenerating=true;generationStep=0;error=nil
         await generationProgress(1)
@@ -696,7 +761,7 @@ struct PositionState:Codable {
         if let ready=takePrepared(.tactics,parents:candidates),let proof=ready.proof {
             var p=ready.puzzle;p.tags=proof["tags"] as? [String] ?? p.tags;p.line=proof["line"] as? [String] ?? p.line;p.nodes=proof["nodes"] as? Int ?? p.nodes
             coach.begin(p);try await save();guide=proof;await prepareScene(proof);apply(proof);connected=true;error=nil
-            await generationProgress(9);try await finishGeneration();phase="playing";introduce();enterBoard();try await wait(0.02);return
+            await generationProgress(9);try await finishGeneration();phase="playing";introduce();revealSide(delay:enterBoard());return
         }
         var lastError:Error=failure("No certified puzzle available")
         for p in candidates {
@@ -709,8 +774,10 @@ struct PositionState:Codable {
                 // a new position. Proven bank variations provide the fallback.
                 await generationProgress(4)
                 let reviewing=coach.reviews.contains{$0.due<=coach.total && $0.puzzle.id==p.id}
+                // The foreground tries ONE composition at the unchanged budget; the
+                // three-attempt policy belongs to idle preparation, not the loader.
                 if (!testing || ProcessInfo.processInfo.arguments.contains("--compose")) && !reviewing {
-                    for _ in 0..<3 {
+                    for _ in 0..<1 {
                         guard let proposal=p.composition(seed:coach.nextRandom()),!coach.seen.contains(proposal.id),coach.allowsNextPuzzle(proposal) else{continue}
                         var request=proposal.request("certify");request["budget"]=p.compositionBudget;request["measureDifficulty"]=true
                         if let proof=try? await NativeChess.call(request) {
@@ -733,7 +800,7 @@ struct PositionState:Codable {
                 generated.nodes=certified["nodes"] as? Int ?? p.nodes
                 delivering=true;coach.begin(generated);try await save();guide=certified;await prepareScene(certified);apply(certified);connected=true;error=nil
                 await generationProgress(9);try await finishGeneration()
-                phase="playing";introduce();enterBoard();try await wait(0.02);return
+                phase="playing";introduce();revealSide(delay:enterBoard());return
             } catch {if delivering {throw error};lastError=error}
         }
         throw lastError
@@ -751,6 +818,7 @@ struct PositionState:Codable {
             world.additionalBottomClearance=puzzle?.kind == .whosWinning ? 140:(puzzle?.kind == .tenMoves ? 85:0)
             world.orient(whiteAtBottom:solverWhite)
             state=next;selected=nil;world.display(next.fen,move:animated ? next.lastMove:nil,dimensions:dimensions)
+            if animated {noteLanding(world.moveAnimationDuration)}
             #if DEBUG
             if testing,ProcessInfo.processInfo.arguments.contains("--piece-gallery") {world.display(dimensions.initialFEN,dimensions:dimensions)}
             #endif
@@ -768,25 +836,75 @@ struct PositionState:Codable {
             guard let move=(guide["line"] as? [String])?.first else{throw failure("Missing certified defense")}
             try await advance(move)
         }
-        if coach.session?.recorded != true,state.moves.count<p.plies,state.result==nil {try await refreshGuide()}
+        // The guide after the reply is not needed to accept the next drop; it
+        // runs concurrently so input unlocks with the landing. Hints and
+        // speculation await it; a stale result can never reach a new position.
+        if coach.session?.recorded != true,state.moves.count<p.plies,state.result==nil {startGuideRefresh()}
+    }
+    private func startGuideRefresh() {
+        guard let p=puzzle,let session=coach.session?.id else{return}
+        let history=state.moves
+        guideTask?.cancel()
+        let token=UUID();guideToken=token
+        guideTask=Task { [weak self] in
+            let result=try? await NativeChess.call(p.request("guide",moves:history))
+            guard let self else{return}
+            // Release the slot whatever happened; a failed guide only means hint()
+            // fetches synchronously later, never a stuck readiness flag.
+            if self.guideToken==token {self.guideTask=nil}
+            guard let result,!Task.isCancelled,self.guideToken==token,self.coach.session?.id==session,self.puzzle?.id==p.id,self.state.moves==history,self.guide["winning"]==nil else{return}
+            self.guide=result;self.revision+=1
+            self.schedulePreparation()
+        }
+    }
+    private var guideToken=UUID()
+    /// Waits for a running guide refresh, then fetches synchronously if still missing.
+    private func ensureGuide() async throws {
+        if guide["winning"]==nil,let pending=guideTask {await pending.value}
+        if guide["winning"]==nil {try await refreshGuide()}
     }
     private func advance(_ move:String,prepared:[String:Any]?=nil) async throws {
         guard let p=puzzle else{throw failure("Missing active puzzle")}
         let history=state.moves+[move]
         let next: [String:Any]
         if let prepared {next=prepared} else {next=try await NativeChess.call(p.request(moves:history))}
-        // Persist before animation: a termination can never lose a verified move.
-        coach.session?.moves=history;try await save();guide=[:];apply(next,animated:prepared==nil);if prepared==nil {feedback()}
+        // Register the verified move with the FIFO writer before the animation
+        // starts; the disk write is awaited before any scoring or opponent action.
+        coach.session?.moves=history;let pending=enqueueSave();guideTask?.cancel();guideTask=nil;guide=[:];apply(next,animated:prepared==nil);if prepared==nil {feedback()}
         if next["solved"] as? Bool==true {
             if let tags=next["tags"] as? [String] {coach.session?.puzzle.tags=tags}
+            try await pending.value()
             try await complete()
         }
         // A verified preview has already landed while its proof was running.
         // Only an actual new animation (the defense) needs this settling window.
-        else if prepared==nil {try await wait(world.moveAnimationDuration+0.10)}
+        else if prepared==nil {try await wait(world.moveAnimationDuration);try await pending.value()}
+        else {try await pending.value()}
+    }
+    /// A snapshot registered synchronously in mutation order. `value()` resumes
+    /// once that exact write has completed (or failed).
+    private final class SaveTicket:@unchecked Sendable {
+        private var result:Result<Void,Error>?
+        private var continuation:CheckedContinuation<Void,Error>?
+        private let lock=NSLock()
+        func finish(_ outcome:Result<Void,Error>) {
+            lock.lock();let waiting=continuation;continuation=nil;if waiting==nil {result=outcome};lock.unlock()
+            waiting?.resume(with:outcome)
+        }
+        func value() async throws {
+            try await withCheckedThrowingContinuation { (c:CheckedContinuation<Void,Error>) in
+                lock.lock()
+                if let result {lock.unlock();c.resume(with:result)} else {continuation=c;lock.unlock()}
+            }
+        }
+    }
+    private func enqueueSave()->SaveTicket {
+        let ticket=SaveTicket()
+        store.enqueue(coach) {ticket.finish($0)}
+        return ticket
     }
     private func complete() async throws {
-        pauseClock();finishing=true;phase="celebrating";guide=[:]
+        pauseClock();finishing=true;phase="celebrating";guideTask?.cancel();guideTask=nil;guide=[:]
         if let s=coach.session,[ChallengeKind.tactics,.personal,.opening].contains(s.puzzle.kind),!s.moves.isEmpty {
             let count=min(6,s.moves.count)
             lesson=Lesson(puzzle:s.puzzle,history:Array(s.moves.dropLast(count)),line:Array(s.moves.suffix(count)));hasReplay=true
@@ -799,10 +917,13 @@ struct PositionState:Codable {
         // Use the celebration window with the UPDATED coach. Fast solvers still
         // give the next puzzle useful preparation time between boards.
         schedulePreparation(nextOnly:true)
-        if state.check,state.legal.isEmpty {world.checkmateKing(white:state.turn=="white")}
-        try await wait(world.moveAnimationDuration)
+        // The final move may already have landed during its proof: wait only the
+        // unelapsed remainder and dissolve the king on that same beat.
+        let remaining=landingRemainder
+        if state.check,state.legal.isEmpty {world.checkmateKing(white:state.turn=="white",delay:remaining)}
+        if remaining>0 {try await wait(remaining)}
         world.celebration.play(in:world);revision+=1
-        try await wait(world.reducedMotion ? 0.2:0.65)
+        try await wait(world.reducedMotion ? 0.2:0.40)
         #if DEBUG
         if testing,ProcessInfo.processInfo.arguments.contains("--hold-completion") {phase="won";return}
         #endif
@@ -814,16 +935,16 @@ struct PositionState:Codable {
     private func beginDrag(_ square:String)->Bool {
         guard canPickUp(square) else{return false};stopPreparation(keepingTurn:true,source:square);selected=square
         world.mark(selected:square,legal:state.legal.filter{$0.hasPrefix(square)},last:state.lastMove)
-        if sound {UIImpactFeedbackGenerator(style:.soft).impactOccurred(intensity:0.45)};return true
+        if sound {impactHaptic.impactOccurred(intensity:0.45);impactHaptic.prepare();outcomeHapticGenerator.prepare()};return true
     }
     private func canDrop(from:String,to:String)->Bool {canPickUp(from) && state.legal.contains(where:{$0.hasPrefix(from+to)})}
     private func drop(from:String,to:String)->Bool {
         guard selected==from,canDrop(from:from,to:to) else{return false}
         let moves=state.legal.filter{$0.hasPrefix(from+to)}
         if moves.count>1 {promotion=moves;pauseClock();return false}
-        guard let move=moves.first else{return false};queue(move);return true
+        guard let move=moves.first else{return false};queue(move,dragged:true);return true
     }
-    private func queue(_ move:String) {moveQueued=true;Task{defer{moveQueued=false};await play(move)}}
+    private func queue(_ move:String,dragged:Bool=false) {moveQueued=true;Task{defer{moveQueued=false};await play(move,dragged:dragged)}}
     func choose(_ square:String) {
         guard challengeKind != .whosWinning,!replayActive,!busy,!moveQueued,!overlay,!showInfo,!showReturn,foreground,promotion.isEmpty,connected,phase=="playing",state.turn==(solverWhite ? "white":"black"),dimensions.position(square) != nil else{return}
         if let from=selected {
@@ -831,10 +952,10 @@ struct PositionState:Codable {
             if candidates.count>1 {promotion=candidates;pauseClock();return}
             if let move=candidates.first {queue(move);return}
         }
-        if canPickUp(square) {selected=selected==square ? nil:square;if sound{UISelectionFeedbackGenerator().selectionChanged()}} else{return}
+        if canPickUp(square) {selected=selected==square ? nil:square;if sound{UISelectionFeedbackGenerator().selectionChanged();impactHaptic.prepare();outcomeHapticGenerator.prepare()}} else{return}
         world.mark(selected:selected,legal:state.legal.filter{$0.hasPrefix(selected ?? "--")},last:state.lastMove)
     }
-    func play(_ move:String) async {
+    func play(_ move:String,dragged:Bool=false) async {
         guard challengeKind != .whosWinning,!replayActive,!busy,!showInfo,!showReturn,foreground,connected,phase=="playing",state.turn==(solverWhite ? "white":"black"),state.result==nil,state.legal.contains(move),let p=puzzle else{return}
         stopPreparation(keepingTurn:true,move:move);pauseClock();busy=true;promotion=[];error=nil;evaluationActivity="Checking move";defer{pendingMove=nil;evaluationActivity=nil;busy=false;resumeClock()}
         do {
@@ -842,15 +963,22 @@ struct PositionState:Codable {
             // Render the legal drop before any objective search. The pending
             // preview never changes the saved attempt until it is proven.
             let previewStarted=ProcessInfo.processInfo.systemUptime
-            let preview=try await previewMove(move)
+            defer {lastTurnMilliseconds=Int((ProcessInfo.processInfo.systemUptime-previewStarted)*1000)}
+            // A dragged piece is already hovering over its square: a shorter arc.
+            let landing:TimeInterval? = dragged ? (world.reducedMotion ? 0.01:0.3):nil
+            let preview=try await previewMove(move,landing:landing)
             var request=p.request("judge",moves:state.moves)
             request["candidate"]=move;request["budget"]=1_000_000
             let judgement=try await NativeChess.call(request)
-            try await finishLanding(since:previewStarted)
+            try await finishLanding(since:previewStarted,landing:landing)
             guard let accepted=judgement["accepted"] as? Bool else{throw failure("Move could not be proven; attempt not graded")}
             if !accepted {
                 if try await registerMistake(at:String(move.dropFirst(2).prefix(2))) {return}
-                phase="retry";try await wait(world.reducedMotion ? 0.12:0.35)
+                // Animate the piece back instead of a static pause and teleport.
+                phase="retry"
+                let back=world.reducedMotion ? 0.12:0.24
+                world.returnPreview(move,duration:back)
+                try await wait(back)
                 world.display(state.fen,dimensions:dimensions);selected=nil;revision+=1;phase="playing";return
             }
             try await advance(move,prepared:preview)
@@ -878,7 +1006,7 @@ struct PositionState:Codable {
             // Prepare a legal rewind before charging its reward reduction.
             let response:[String:Any]
             var assessment:EngineAssessment?
-            if p.kind == .tactics {response=try await NativeChess.call(p.request("guide",moves:attempt.moves))}
+            if p.kind == .tactics {guideTask?.cancel();guideTask=nil;response=try await NativeChess.call(p.request("guide",moves:attempt.moves))}
             else {
                 response=try await ChallengeEngine.state(p,moves:attempt.moves)
                 assessment=try await ChallengeEngine.evaluate(initial:p.fen,moves:attempt.moves).1
@@ -897,7 +1025,7 @@ struct PositionState:Codable {
         defer {evaluationActivity=nil;busy=false;resumeClock()}
         do {
             if p.kind == .tactics {
-                if guide["winning"]==nil {try await refreshGuide()}
+                try await ensureGuide()
             } else if openAssessment==nil {try await refreshOpenEvaluation()}
             let line=guide["line"] as? [String] ?? []
             guard let move=line.first,state.legal.contains(move),foreground,!showReturn else{return}
@@ -914,9 +1042,26 @@ struct PositionState:Codable {
             revision+=1
         } catch {handle(error)}
     }
-    private func enterBoard() {
-        if journeyEntered {journeyEntered=false;return}
-        if showInfo {world.settleForInstructions()} else {world.puzzleEntrance()}
+    /// Returns the entrance delay before the side text may rise: 0 after a
+    /// journey (board already stationary) or under the instruction card.
+    @discardableResult private func enterBoard()->Double {
+        if journeyEntered {journeyEntered=false;return 0}
+        if showInfo {world.settleForInstructions();return 0}
+        world.puzzleEntrance();return world.reducedMotion ? 0.2:0.75
+    }
+    private func revealSide(delay:Double) {sideAnnouncementPending=true;presentSideAnnouncement(delay:delay)}
+    /// "Playing as White/Black" on every reveal; deferred while the first-time
+    /// instruction card is open and fired by its acknowledgement instead.
+    private func presentSideAnnouncement(delay:Double=0) {
+        guard sideAnnouncementPending,foreground,!showInfo,!showReturn,!replayActive,!overlay,boardRevealed,phase=="playing",puzzle != nil else{return}
+        sideAnnouncementPending=false
+        let label="Playing as "+CollectionArt.pieceColorName(white:solverWhite,theme:displayedPieces)
+        world.sideAnnouncement.present(white:solverWhite,label:label,columns:dimensions.columns,clipPlane:world.surfaceClipPlane(),delay:delay,reduced:world.reducedMotion)
+        if UIAccessibility.isVoiceOverRunning {UIAccessibility.post(notification:.announcement,argument:label)}
+        #if DEBUG
+        // Fixture diagnostics only: republish so `sideText`/`sideVisible` are observable.
+        if testing {let lifetime=world.reducedMotion ? 1.4:SideAnnouncement.duration+1.5;objectWillChange.send();Task{[weak self] in try? await self?.wait(delay+lifetime);self?.objectWillChange.send()}}
+        #endif
     }
     private func frames(for lesson:Lesson) async throws->[ReplayFrame] {
         var result:[ReplayFrame]=[],history=lesson.history
@@ -943,7 +1088,7 @@ struct PositionState:Codable {
     }
     private func beginReplay(_ frames:[ReplayFrame],puzzle:TrainingPuzzle) {
         guard !frames.isEmpty else{return}
-        world.onCancelDrag?();world.moveQuality.clear();selected=nil
+        world.onCancelDrag?();world.moveQuality.clear();world.sideAnnouncement.clear();sideAnnouncementPending=false;selected=nil
         replayFrames=frames;replayCount=frames.count;replayIndex=0;replayActive=true
         world.additionalBottomClearance=0
         world.orient(whiteAtBottom:puzzle.white)
@@ -998,12 +1143,13 @@ struct PositionState:Codable {
     }
     func requestInstructions() {
         guard !busy,puzzle != nil else{return}
-        stopPreparation();pauseClock();world.onCancelDrag?();world.moveQuality.clear();firstTypeIntroduction=false;boardRevealed=true;showInfo=true;world.settleForInstructions()
+        stopPreparation();pauseClock();world.onCancelDrag?();world.moveQuality.clear();world.sideAnnouncement.clear();sideAnnouncementPending=false;firstTypeIntroduction=false;boardRevealed=true;showInfo=true;world.settleForInstructions()
     }
     func acknowledgeInstructions() async {
         guard !busy else{return}
         coach.introductions=(coach.introductions ?? []).union(["type-v2:"+instructionType])
         showInfo=false;checkpoint();boardRevealed=true;resumeClock()
+        presentSideAnnouncement()
     }
     func continueAfterReturn() async {
         guard !busy else{return}
@@ -1067,7 +1213,7 @@ struct PositionState:Codable {
             let response=try await ChallengeEngine.state(p,moves:[]);await prepareScene(response);apply(response)
         }
         connected=true;error=nil;challengeNotice=nil
-        if p.kind != .whosWinning {if let preparedAssessment {installAssessment(preparedAssessment)} else {try await refreshOpenEvaluation()}};await generationProgress(9);try await finishGeneration();phase="playing";introduce();enterBoard();try await wait(0.02)
+        if p.kind != .whosWinning {if let preparedAssessment {installAssessment(preparedAssessment)} else {try await refreshOpenEvaluation()}};await generationProgress(9);try await finishGeneration();phase="playing";introduce();enterBoard()
     }
     private func installAssessment(_ e:EngineAssessment) {
         guard let p=puzzle else{return}
@@ -1102,27 +1248,28 @@ struct PositionState:Codable {
         }
         if coach.session?.recorded != true {try await refreshOpenEvaluation();if try await finishOpenIfNeeded(){return};phase="playing";introduce()}
     }
-    private func previewMove(_ move:String) async throws->[String:Any] {
+    private func previewMove(_ move:String,landing:TimeInterval?=nil) async throws->[String:Any] {
         guard let p=puzzle else{throw failure("Missing puzzle")}
         let next: [String:Any]
         if p.kind == .tactics {next=try await NativeChess.call(p.request(moves:state.moves+[move]))}
         else {next=try await ChallengeEngine.state(p,moves:state.moves+[move])}
         guard let fen=next["fen"] as? String else{throw failure("Move position unavailable")}
-        selected=nil;pendingMove=move;world.display(fen,move:move,dimensions:dimensions);feedback();revision+=1
+        selected=nil;pendingMove=move;world.display(fen,move:move,dimensions:dimensions,landing:landing);noteLanding(landing ?? world.moveAnimationDuration);feedback();revision+=1
         // Analysis starts after placement and runs DURING the landing animation.
         // The caller waits only its unelapsed remainder before showing a verdict.
         return next
     }
-    private func finishLanding(since started:TimeInterval) async throws {
-        let duration=world.reducedMotion ? 0.08:world.moveAnimationDuration
+    private func finishLanding(since started:TimeInterval,landing:TimeInterval?=nil) async throws {
+        let duration=world.reducedMotion ? 0.08:(landing ?? world.moveAnimationDuration)
         let remaining=duration-(ProcessInfo.processInfo.systemUptime-started)
         if remaining>0 {try await wait(remaining)}
     }
     private func openAdvance(_ move:String,waitForAnimation:Bool=true) async throws {
         guard let p=puzzle else{return}
         let history=state.moves+[move],next=try await ChallengeEngine.state(p,moves:history)
-        coach.session?.moves=history;try await save();apply(next,animated:true);feedback()
+        coach.session?.moves=history;let pending=enqueueSave();apply(next,animated:true);feedback()
         if waitForAnimation {try await wait(world.moveAnimationDuration+0.1)}
+        try await pending.value()
     }
     private func openDefense(analyzedReply:String?=nil,preparedReply:TurnAnalysis.PreparedReply?=nil) async throws {
         guard let p=puzzle,state.result==nil else{return}
@@ -1179,7 +1326,7 @@ struct PositionState:Codable {
         let score=liveScore;coach.session?.extraPenalty=(coach.session?.extraPenalty ?? 0)+2
         coach.finish(skipped:true);try await save();phase="failed";evaluationActivity=nil
         mistakeFeedback(at:String(state.lastMove?.suffix(2) ?? "e4"),scoreBefore:score)
-        try await wait(world.reducedMotion ? 0.2:0.9)
+        try await wait(failureHold)
         try await cloudJourney()
     }
     private func continueBlunder(move:String,history:[String],decision:TurnAnalysis.Decision) async throws {
@@ -1299,13 +1446,17 @@ struct PositionState:Codable {
             coach.session?.extraPenalty=(coach.session?.extraPenalty ?? 0)+1.75
             coach.finish(skipped:true);try await save();phase="failed"
             mistakeFeedback(at:square,scoreBefore:previousScore)
-            try await wait(0.9)
+            try await wait(failureHold)
             try await cloudJourney();return true
         }
         try await save();mistakeFeedback(at:square,scoreBefore:previousScore);return false
     }
-    func feedback(){if sound{UIImpactFeedbackGenerator(style:.soft).impactOccurred(intensity:0.6);AudioServicesPlaySystemSound(1104)}}
-    private func handle(_ failure:Error){stopPreparation(clear:true);journeyWatchdog?.cancel();journeyStarted=nil;journeyReveal=nil;journeyFallback=false;journeyEntered=false;closeReplay();world.moveQuality.clear();evaluationActivity=nil;isGenerating=false;pauseClock();error=failure.localizedDescription;connected=false;phase="error";finishing=false;revision+=1}
+    /// The failed position stays visible while the red flash, shake and score
+    /// pulse finish; `busy` remains true. Not motion, so only shortened when
+    /// the colour-only feedback (system Reduce Motion or motion off) is active.
+    private var failureHold:Double {world.reducedMotion ? 1.2:1.8}
+    func feedback(){if sound{impactHaptic.impactOccurred(intensity:0.6);AudioServicesPlaySystemSound(1104)}}
+    private func handle(_ failure:Error){stopPreparation(clear:true);journeyWatchdog?.cancel();journeyStarted=nil;journeyReveal=nil;journeyFallback=false;journeyEntered=false;closeReplay();world.moveQuality.clear();world.sideAnnouncement.clear();sideAnnouncementPending=false;evaluationActivity=nil;isGenerating=false;pauseClock();error=failure.localizedDescription;connected=false;phase="error";finishing=false;revision+=1}
 }
 
 #if DEBUG
