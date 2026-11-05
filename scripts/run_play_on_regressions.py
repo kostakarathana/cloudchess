@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Play-on hearts, never-repeat retirement, ad allowance and on-track proof regressions.
+"""Play-on hearts, the adaptive defender, never-repeat retirement, ad allowance and on-track proof regressions.
 Requires the macOS native libraries (scripts/build_native_engine.py --sdk macosx);
 the candidate-proof checks also need python-chess.
 """
@@ -15,7 +15,7 @@ for source,name,extra in [('ChessBridge','bridge',['-DCC_DUAL_ENGINE']),('ChessB
 link=[*[str(OUT/(name+'.o')) for name in ['bridge','dotprod','puzzle']],'NativeEngine/lib/macosx/libStockfish.a','NativeEngine/lib/macosx/libStockfishDotprod.a','-lc++','-lsqlite3']
 sources=[f'CloudChess/{s}.swift' for s in ['NativeProfiles','PuzzleCoach','ModeDifficulty','ChallengeModes','CollectionCatalog','BoardGeometry']]
 bank='CloudChess/EngineResources/puzzles.json'
-for test in ['test_failure_retirement','test_focused_puzzles','test_prepared_gate','test_puzzle_shuffle']:
+for test in ['test_failure_retirement','test_focused_puzzles','test_prepared_gate','test_puzzle_shuffle','test_skill_tracking']:
     run(['swiftc','-O','-D','DEBUG','-parse-as-library','-import-objc-header','NativeEngine/CloudChess-Bridging-Header.h',*sources,f'scripts/{test}.swift',*link,'-o',str(OUT/test)])
     with (OUT/(test+'.log')).open('w') as log:run([str(OUT/test),bank],stdout=log)
     print(test,(OUT/(test+'.log')).read_text().strip()[-300:])
@@ -35,7 +35,7 @@ std::cout<<std::string((const char*)output.bytes,output.length)<<std::endl;
 ''')
 run(['xcrun','clang++','-std=c++17','-O3','-fobjc-arc','-framework','Foundation','-I','NativeEngine',str(cli),str(OUT/'puzzle.o'),'-o',str(OUT/'proof')])
 env=dict(os.environ,CC_PUZZLE_BINARY=str(OUT/'proof'))
-for test in ['test_play_on_puzzles','test_candidate_proofs','test_puzzle_engine']:
+for test in ['test_play_on_puzzles','test_adaptive_defense','test_candidate_proofs','test_puzzle_engine']:
     with (OUT/(test+'.log')).open('w') as log:
         result=subprocess.run([sys.executable,str(ROOT/'scripts'/(test+'.py'))],cwd=ROOT.parent,env=env,stdout=log,stderr=subprocess.STDOUT)
     print(test,'exit',result.returncode,(OUT/(test+'.log')).read_text().strip()[-400:])

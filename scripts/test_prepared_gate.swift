@@ -17,9 +17,9 @@ import Foundation
         check(valid(c,10,original.id)==nil);check(valid(c,10,nil,"mate")==nil)
         c.seen=[original.id];check(valid(c)==nil);c.seen=[]
         c.reviews=[PuzzleReview(puzzle:original,due:0)]
-        // Review slots are totals 2 and 3 modulo 4, so both alternating families get one.
-        for slot in [2,3] {c.total=slot;check(c.reviewSlot);check((valid(c)==nil)==c.eligibleReview(c.reviews[0]))}
-        for idle in [0,1] {c.total=idle;check(!c.reviewSlot);check(valid(c) != nil)}
+        // Review slots are totals 6 and 7 modulo 8, so both alternating families get one.
+        for slot in [6,7,14] {c.total=slot;check(c.reviewSlot);check((valid(c)==nil)==c.eligibleReview(c.reviews[0]))}
+        for idle in [0,1,2,3,4,5] {c.total=idle;check(!c.reviewSlot);check(valid(c) != nil)}
         c.reviews=[];c.total=0
         // A failed presentation retires the source: mirrors are rejected for good.
         var cooled=c;cooled.begin(original);cooled.session?.mistakes=3;cooled.finish(skipped:true,now:0)

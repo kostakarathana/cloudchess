@@ -45,14 +45,16 @@ import Foundation
     }
     for p in bank.prefix(200) {
         guard let move=p.line.first else{continue}
-        var r=p.request("judge");r["candidate"]=move;r["budget"]=1_000_000
+        var r=p.request("defend",moves:[move]);r["strength"]=0.5;r["seed"]=PuzzleDefense.seed(session:"s",ply:1);r["budget"]=1_000_000
         func keep(_ r:[String:Any],source:String?=nil,chosen:String?=nil)->Bool {
             TurnAnalysis.keepsPreparation(r,puzzle:p,history:[],known:[],source:source,move:chosen)
         }
-        check(keep(r,source:String(move.prefix(2))),"Picked tactical proof is preserved")
-        check(keep(r,chosen:move),"Exact tactical drop adopts its proof")
-        check(!keep(r,chosen:"z9z8"),"Unrelated tactical proof is canceled")
-        for (key,value) in [("moves",[move] as Any),("budget",10000 as Any),("plies",999 as Any),("columns",3 as Any),("initial",initial as Any)] {
+        check(keep(r,source:String(move.prefix(2))),"Picked piece's defender reply is preserved")
+        check(keep(r,chosen:move),"Exact tactical drop adopts its defender reply")
+        check(!keep(r,chosen:"z9z8"),"Unrelated defender reply is canceled")
+        var judge=p.request("judge");judge["candidate"]=move;judge["budget"]=1_000_000
+        check(!keep(judge,chosen:move),"The retired judge request is no longer preserved")
+        for (key,value) in [("moves",[] as Any),("budget",10000 as Any),("plies",999 as Any),("columns",3 as Any),("initial",initial as Any),("operation","guide" as Any),("seed","x" as Any)] {
             var altered=r;altered[key]=value
             check(!keep(altered,chosen:move),"Tactical identity includes \(key)")
         }

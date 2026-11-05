@@ -63,6 +63,27 @@ import Foundation
         check(PlanPricing.savingsPercent(monthly: Decimal(string: "4.99")!, annual: Decimal(string: "59.88")!) == nil, "No saving, no badge")
         check(PlanPricing.savingsPercent(monthly: 0, annual: 50) == nil, "Missing monthly price")
         check(PlanPricing.savingsPercent(monthly: Decimal(string: "9.99")!, annual: Decimal(string: "59.99")!) == 49, "49.96% rounds down")
+        // 5. Premium prompt: every 2–4 completed breaks, at most hourly, waits while
+        //    ineligible, and each "not now" adds at most two breaks.
+        for roll in 2...4 {
+            var u = PremiumUpsell(); var shownAt: [Int] = []
+            for n in 1...12 { if u.noteBreak(at: at(Double(n) * 4000), eligible: true, roll: { r in check(r == 2...4, "Interval 2–4"); return roll }) { shownAt.append(n) } }
+            check(shownAt == Array(stride(from: roll, through: 12, by: roll)), "Every \(roll) breaks: \(shownAt)")
+        }
+        var hourly = PremiumUpsell(); var prompts = 0
+        for n in 1...11 { if hourly.noteBreak(at: at(Double(n) * 300), eligible: true, roll: { _ in 2 }) { prompts += 1 } }
+        check(prompts == 1, "Five-minute breaks: one prompt within the hour (\(prompts))")
+        var waiting = PremiumUpsell()
+        check(!waiting.noteBreak(at: at(0), eligible: true, roll: { _ in 2 }), "Not yet due")
+        check(!waiting.noteBreak(at: at(4000), eligible: false, roll: { _ in 2 }), "Due but offline: waits")
+        check(waiting.noteBreak(at: at(8000), eligible: true, roll: { _ in 2 }), "Shown at the next eligible break")
+        var declining = PremiumUpsell()
+        for _ in 0..<5 { declining.declined() }
+        var gaps: [Int] = [], count = 0
+        for n in 1...30 { count += 1; if declining.noteBreak(at: at(Double(n) * 4000), eligible: true, roll: { _ in 3 }) { gaps.append(count); count = 0 } }
+        check(gaps.allSatisfy { $0 == 5 }, "Declines add at most two breaks: \(gaps)")
+        let saved = try! JSONDecoder().decode(PremiumUpsell.self, from: JSONEncoder().encode(declining))
+        check(saved == declining, "Prompt schedule persists")
         print("PASS: \(assertions) ad allowance assertions")
     }
 }

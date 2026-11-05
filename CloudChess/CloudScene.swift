@@ -37,14 +37,12 @@ final class CloudScene: ObservableObject {
     let pieceEffects=PieceCloudEffects()
     let moveQuality=MoveQualityEffects()
     let celebration=PuzzleCelebration()
-    let sideAnnouncement=SideAnnouncement()
     private var nightAmount:Float=0
     private var daySunIntensity:CGFloat=1150
     init() {
         scene.background.contents=UIColor.clear
-        scene.rootNode.addChildNode(boardAnchor);boardAnchor.addChildNode(island);island.addChildNode(pieces);island.addChildNode(marks);island.addChildNode(pieceEffects.root);island.addChildNode(moveQuality.root);island.addChildNode(sideAnnouncement.root)
+        scene.rootNode.addChildNode(boardAnchor);boardAnchor.addChildNode(island);island.addChildNode(pieces);island.addChildNode(marks);island.addChildNode(pieceEffects.root);island.addChildNode(moveQuality.root)
         buildBoard();lightScene()
-        sideAnnouncement.interactive={ [weak self] seconds in self?.boostRendering(for:seconds) }
         camera.camera=SCNCamera();camera.camera?.usesOrthographicProjection=false
         camera.camera?.projectionDirection = .vertical
         camera.camera?.zNear=0.1;camera.camera?.zFar=100
@@ -69,37 +67,41 @@ final class CloudScene: ObservableObject {
     func orient(whiteAtBottom:Bool) {
         guard self.whiteAtBottom != whiteAtBottom else{return}
         onCancelDrag?();self.whiteAtBottom=whiteAtBottom
-        pieceEffects.clear();moveQuality.clear();sideAnnouncement.clear();marks.childNodes.forEach{$0.removeFromParentNode()}
+        pieceEffects.clear();moveQuality.clear();marks.childNodes.forEach{$0.removeFromParentNode()}
         for (square,node) in nodes {node.removeAllActions();node.position=position(square)}
         island.childNode(withName:"board-surface",recursively:false)?.eulerAngles.y=whiteAtBottom ? 0:.pi
     }
+    /// Measured HUD edges in view points from the top: the bottom of the header
+    /// (score, hearts and challenge cloud) and the top of the bottom controls.
+    /// The board, including the crowns, fits between them with a small gap, so
+    /// a taller title or bar never overlaps it. Zero means not yet measured.
+    private(set) var hudTopEdge:Float=0,hudBottomEdge:Float=0
+    var requestLayout:(()->Void)?
+    func setHUDEdges(top:Float,bottom:Float) {
+        guard top.isFinite,bottom.isFinite,abs(top-hudTopEdge)>0.5 || abs(bottom-hudBottomEdge)>0.5 else{return}
+        hudTopEdge=max(0,top);hudBottomEdge=max(0,bottom);requestLayout?()
+    }
     func fitBoard(width:Float,height:Float,top:Float,bottom:Float,left:Float=0,right:Float=0) {
-        let placement=dimensions.fittedPlacement(width:width,height:height,topInset:top,bottomInset:bottom+additionalBottomClearance,leftInset:left,rightInset:right)
+        // fittedPlacement reserves 182 pt above and 106 pt below its insets.
+        let gap:Float=10
+        let measuredTop=hudTopEdge>0 ? hudTopEdge+gap-182:0
+        let measuredBottom=hudBottomEdge>0 && hudBottomEdge<height ? height-hudBottomEdge+gap-106:0
+        let placement=dimensions.fittedPlacement(width:width,height:height,topInset:max(top,measuredTop),bottomInset:max(bottom+additionalBottomClearance,measuredBottom),leftInset:left,rightInset:right)
         let scale=placement.scale
         boardAnchor.simdPosition=placement.origin
         island.scale=SCNVector3(scale,scale,scale)
         cloudField.setBoardFootprint(SIMD2((Float(dimensions.columns)/2+0.24)*scale,(Float(dimensions.rows)/2+0.24)*scale),origin:placement.origin)
         scene.rootNode.childNode(withName:"sun",recursively:false)?.light?.orthographicScale=Double(max(11,Float(max(dimensions.columns,dimensions.rows))*scale*0.85+2))
-        if sideAnnouncement.visible {sideAnnouncement.updateClipPlane(surfaceClipPlane())}
-    }
-    /// View-space plane of the playable surface (y=0.091 island units) used to hide
-    /// the part of the side text still inside the platform while it rises.
-    func surfaceClipPlane()->SCNVector4 {
-        let v=camera.simdWorldTransform.inverse
-        let n4=v*SIMD4<Float>(0,1,0,0),n=simd_normalize(SIMD3<Float>(n4.x,n4.y,n4.z))
-        let w=boardAnchor.simdPosition+SIMD3<Float>(0,0.091*island.simdScale.y,0)
-        let p4=v*SIMD4<Float>(w.x,w.y,w.z,1),p=SIMD3<Float>(p4.x,p4.y,p4.z)
-        return SCNVector4(n.x,n.y,n.z,-simd_dot(n,p))
     }
     func configureBoard(_ size:BoardDimensions) {
         guard size != dimensions else{return}
-        dimensions=size;pieceEffects.clear();moveQuality.clear();sideAnnouncement.clear()
-        for node in island.childNodes where node !== pieces && node !== marks && node !== pieceEffects.root && node !== moveQuality.root && node !== sideAnnouncement.root {node.removeFromParentNode()}
+        dimensions=size;pieceEffects.clear();moveQuality.clear()
+        for node in island.childNodes where node !== pieces && node !== marks && node !== pieceEffects.root && node !== moveQuality.root {node.removeFromParentNode()}
         pieces.childNodes.forEach{$0.removeFromParentNode()};marks.childNodes.forEach{$0.removeFromParentNode()}
         nodes.removeAll();symbols.removeAll();buildBoard()
     }
     func settleForInstructions() {
-        sideAnnouncement.clear()
+        cancelSidePulse()
         island.removeAction(forKey:"puzzle-transition");island.position=SCNVector3Zero;island.opacity=1
         for (square,node) in nodes {node.removeAction(forKey:"puzzle-arrive");node.position=position(square);node.opacity=1}
     }
@@ -110,15 +112,14 @@ final class CloudScene: ObservableObject {
         SCNTransaction.begin();SCNTransaction.disableActions=true
         for (material,color) in zip(boardMaterials,colors) {material.diffuse.contents=color;material.normal.contents=nil;material.roughness.contents=0.43}
         SCNTransaction.commit()
-        if boardTheme==0 && hasDisplayedPosition {
-            island.childNode(withName:"theme-platform",recursively:false)?.removeFromParentNode()
-            if let frame=AtelierAssets.frame(AtelierAssets.originalTheme,columns:dimensions.columns,rows:dimensions.rows) {island.addChildNode(frame)}
-        }
+        // The original board is a plain porcelain platform: no carved gold frieze.
+        if boardTheme==0 {island.childNode(withName:"theme-platform",recursively:false)?.removeFromParentNode()}
     }
     func buildBoard() {
         let side=PieceSculptor.material(boardStyle.side,metal:0.04,roughness:0.43)
         let porcelain=PieceSculptor.material(boardStyle.rim,roughness:0.34)
-        let body=PieceSculptor.box(CGFloat(dimensions.columns)+0.36,0.34,CGFloat(dimensions.rows)+0.36,0.10,side,at:SCNVector3(0,-0.135,0))
+        // Twice the original depth below the playing surface (0.396 → 0.792).
+        let body=PieceSculptor.box(CGFloat(dimensions.columns)+0.36,0.736,CGFloat(dimensions.rows)+0.36,0.10,side,at:SCNVector3(0,-0.333,0))
         body.name="platform";island.addChildNode(body)
         let lip=PieceSculptor.box(CGFloat(dimensions.columns)+0.29,0.12,CGFloat(dimensions.rows)+0.29,0.055,porcelain,at:SCNVector3(0,0.029,0))
         lip.name="platform";island.addChildNode(lip)
@@ -245,7 +246,7 @@ final class CloudScene: ObservableObject {
         island.removeAllActions();island.position=SCNVector3Zero;island.eulerAngles=SCNVector3Zero
         cloudField.setPaused(reduced)
         island.opacity=1
-        sideAnnouncement.clear()
+        cancelSidePulse()
         if reduced {
             pieceEffects.clear();celebration.clear()
             for (square,node) in nodes {
@@ -255,7 +256,7 @@ final class CloudScene: ObservableObject {
     }
     func display(_ fen:String,move:String?=nil,dimensions:BoardDimensions?=nil,landing:TimeInterval?=nil) {
         onCancelDrag?()
-        if move==nil {pieceEffects.clear();moveQuality.clear();sideAnnouncement.clear()}
+        if move==nil {pieceEffects.clear();moveQuality.clear();cancelSidePulse()}
         let firstPosition = !hasDisplayedPosition
         hasDisplayedPosition=true
         let willRebuild=dimensions.map{$0 != self.dimensions} ?? false
@@ -351,6 +352,75 @@ final class CloudScene: ObservableObject {
         UIAccessibility.post(notification:.announcement,argument:"Key piece: \(piece) on \(square)")
     }
     var pulsingPiece:Bool {marks.childNode(withName:"hint-pulse",recursively:false) != nil}
+    /// At each reveal the solver's pieces briefly pulse (two gentle beats over a
+    /// soft ring) instead of any text. Reduce Motion keeps only the rings, still.
+    private(set) var sidePulses=0
+    var sidePulsing:Bool {marks.childNode(withName:"side-pulse",recursively:false) != nil}
+    private static let sideRingGeometry:SCNGeometry={
+        let g=SCNTube(innerRadius:0.33,outerRadius:0.43,height:0.012);let m=SCNMaterial();m.lightingModel = .constant
+        m.diffuse.contents=UIColor(red:1.0,green:0.92,blue:0.62,alpha:0.85);m.writesToDepthBuffer=false;g.materials=[m];return g
+    }()
+    func pulseSide(white:Bool,delay:TimeInterval=0) {
+        cancelSidePulse();sidePulses+=1
+        let group=SCNNode();group.name="side-pulse";marks.addChildNode(group)
+        let duration=1.1
+        for (square,node) in nodes where symbols[square]?.isUppercase==white {
+            let ring=SCNNode(geometry:Self.sideRingGeometry);let p=position(square)
+            ring.position=SCNVector3(p.x,0.112,p.z);ring.categoryBitMask=2;ring.castsShadow=false;ring.opacity=0
+            group.addChildNode(ring)
+            if reducedMotion {ring.runAction(.sequence([.wait(duration:delay),.fadeOpacity(to:0.8,duration:0),.wait(duration:duration)]))}
+            else {
+                let beat=SCNAction.sequence([.scale(to:1.13,duration:0.22),.scale(to:1,duration:0.33)]);beat.timingMode = .easeInEaseOut
+                node.runAction(.sequence([.wait(duration:delay),.repeat(beat,count:2)]),forKey:"side-pulse")
+                let glow=SCNAction.sequence([.fadeOpacity(to:0.9,duration:0.22),.fadeOpacity(to:0.35,duration:0.33)])
+                ring.runAction(.sequence([.wait(duration:delay),.repeat(glow,count:2),.fadeOut(duration:0.2)]))
+            }
+        }
+        if !reducedMotion {boostRendering(for:delay+duration+0.3)} else {boostRendering(for:delay+0.1)}
+        // Actions only advance while SceneKit renders; time the removal on the main queue.
+        DispatchQueue.main.asyncAfter(deadline:.now()+delay+duration+0.25) { [weak self,weak group] in
+            guard let group,group.parent != nil else{return}
+            self?.cancelSidePulse()
+        }
+    }
+    func cancelSidePulse() {
+        for node in nodes.values where node.action(forKey:"side-pulse") != nil {node.removeAction(forKey:"side-pulse");node.scale=SCNVector3(1,1,1)}
+        marks.childNodes.filter{$0.name=="side-pulse"}.forEach{$0.removeFromParentNode()}
+    }
+    /// A flat arrow on the board surface from one square to another, used by
+    /// the guided solution. Pieces stand over it; it never takes input.
+    private(set) var guideArrow:String?
+    func showGuideArrow(_ move:String) {
+        clearGuideArrow()
+        guard move.count>=4 else{return}
+        let from=position(String(move.prefix(2))),to=position(String(move.dropFirst(2).prefix(2)))
+        let dx=to.x-from.x,dz=to.z-from.z,length=sqrt(dx*dx+dz*dz)
+        guard length>0.1 else{return}
+        let shaft:CGFloat=0.15,head:CGFloat=0.36,width:CGFloat=0.44,start:CGFloat=0.18,end=CGFloat(length)-0.12
+        let path=UIBezierPath()
+        path.move(to:CGPoint(x:start,y:-shaft/2));path.addLine(to:CGPoint(x:end-head,y:-shaft/2));path.addLine(to:CGPoint(x:end-head,y:-width/2))
+        path.addLine(to:CGPoint(x:end,y:0));path.addLine(to:CGPoint(x:end-head,y:width/2));path.addLine(to:CGPoint(x:end-head,y:shaft/2))
+        path.addLine(to:CGPoint(x:start,y:shaft/2));path.close()
+        let shape=SCNShape(path:path,extrusionDepth:0.01);shape.chamferRadius=0
+        let m=SCNMaterial();m.lightingModel = .constant;m.diffuse.contents=UIColor(red:1.0,green:0.74,blue:0.26,alpha:0.92);m.isDoubleSided=true
+        shape.materials=[m]
+        let arrow=SCNNode(geometry:shape)
+        // Shape lies in its XY plane: lay it flat, then point +X from source to target.
+        arrow.eulerAngles=SCNVector3(-Float.pi/2,0,0)
+        let holder=SCNNode();holder.name="guide-arrow";holder.position=SCNVector3(from.x,0.118,from.z)
+        holder.eulerAngles.y=atan2(-dz,dx);holder.addChildNode(arrow)
+        holder.categoryBitMask=2;arrow.categoryBitMask=2;arrow.castsShadow=false
+        marks.addChildNode(holder);guideArrow=move
+        if !reducedMotion {
+            holder.opacity=0.55
+            holder.runAction(.repeatForever(.sequence([.fadeOpacity(to:1,duration:0.6),.fadeOpacity(to:0.55,duration:0.6)])),forKey:"guide-pulse")
+            boostRendering(for:1.3)
+        }
+        UIAccessibility.post(notification:.announcement,argument:"Move from \(move.prefix(2)) to \(move.dropFirst(2).prefix(2))")
+    }
+    func clearGuideArrow() {
+        marks.childNodes.filter{$0.name=="guide-arrow"}.forEach{$0.removeFromParentNode()};guideArrow=nil
+    }
     /// Picking up or selecting a piece ends the hint pulse at once.
     func cancelHintPulse() {
         for node in nodes.values where node.action(forKey:"hint-pulse") != nil {node.removeAction(forKey:"hint-pulse");node.scale=SCNVector3(1,1,1)}
@@ -382,7 +452,8 @@ final class CloudScene: ObservableObject {
     private static let lastMoveTile:SCNGeometry={let g=SCNBox(width:0.96,height:0.009,length:0.96,chamferRadius:0.035);let m=SCNMaterial();m.diffuse.contents=UIColor(red:0.64,green:0.78,blue:0.86,alpha:0.35);m.lightingModel = .constant;g.materials=[m];return g}()
     func mark(selected:String?,legal:[String],last:String?) {
         selectedSquare=selected
-        marks.childNodes.forEach{$0.removeFromParentNode()}
+        // The guide arrow and the side pulse outlive selection marks.
+        marks.childNodes.filter{$0.name != "guide-arrow" && $0.name != "side-pulse"}.forEach{$0.removeFromParentNode()}
         for (sq,n) in nodes { n.removeAction(forKey:"select");if !n.hasActions {n.position=position(sq);n.scale=SCNVector3(1,1,1)} }
         if let last=last,last.count>=4 {
             for s in [String(last.prefix(2)),String(last.dropFirst(2).prefix(2))] {
@@ -473,6 +544,7 @@ final class AccessibleBoardView:SCNView {
     private var fittedViewport=CGRect.null
     private var fittedInsets=UIEdgeInsets.zero
     private var fittedClearance:Float=0
+    private var fittedHUD:[Float]=[0,0]
     func boardPoint(at point:CGPoint)->SIMD3<Float>? {
         guard let world=world,bounds.width>0,bounds.height>0 else{return nil}
         return SceneComposition.boardPoint(unit:SIMD2(Float(point.x/bounds.width),Float(point.y/bounds.height)),aspect:Float(bounds.width/bounds.height),scale:world.island.simdScale.x,origin:world.boardAnchor.simdPosition)
@@ -595,9 +667,9 @@ final class AccessibleBoardView:SCNView {
     }
     func layoutBoard() {
         let insets=window?.safeAreaInsets ?? .zero
-        if bounds.width>0 && bounds.height>0 && (fittedDimensions != world?.dimensions || fittedViewport != bounds || fittedInsets != insets || fittedClearance != world?.additionalBottomClearance) {
+        if bounds.width>0 && bounds.height>0 && (fittedDimensions != world?.dimensions || fittedViewport != bounds || fittedInsets != insets || fittedClearance != world?.additionalBottomClearance || fittedHUD != [world?.hudTopEdge ?? 0,world?.hudBottomEdge ?? 0]) {
             pieceDrag?.cancel()
-            fittedDimensions=world?.dimensions;fittedViewport=bounds;fittedInsets=insets;fittedClearance=world?.additionalBottomClearance ?? 0
+            fittedDimensions=world?.dimensions;fittedViewport=bounds;fittedInsets=insets;fittedClearance=world?.additionalBottomClearance ?? 0;fittedHUD=[world?.hudTopEdge ?? 0,world?.hudBottomEdge ?? 0]
             let tangent=SceneComposition.tangentHalfFOV(aspect:Float(bounds.width/bounds.height))
             world?.fitBoard(width:Float(bounds.width),height:Float(bounds.height),top:Float(window?.safeAreaInsets.top ?? 0),bottom:Float(insets.bottom),left:Float(insets.left),right:Float(insets.right))
             world?.camera.camera?.fieldOfView=CGFloat(2*atan(tangent)*180/Float.pi)
@@ -616,6 +688,7 @@ struct ChessSceneView:UIViewRepresentable {
         view.backgroundColor = .clear;view.isOpaque=false;view.antialiasingMode = .multisampling4X
         view.preferredFramesPerSecond=AccessibleBoardView.idleFramesPerSecond;view.isPlaying=true;view.autoenablesDefaultLighting=false
         world.setInteractive={ [weak view] on in view?.setInteractive(on) }
+        world.requestLayout={ [weak view] in view?.layoutBoard() }
         #if DEBUG
         if ProcessInfo.processInfo.arguments.contains("--atelier-frame-audit") {
             let audit=AtelierFrameAudit();view.atelierFrameAudit=audit;view.delegate=audit
@@ -624,7 +697,7 @@ struct ChessSceneView:UIViewRepresentable {
         world.prepareForDisplay={ [weak view] in
             guard let view,let scene=view.scene else{return}
             await withCheckedContinuation { continuation in
-                view.prepare([scene as Any]+world.sideAnnouncement.geometries.map{$0 as Any}) { _ in continuation.resume() }
+                view.prepare([scene as Any]) { _ in continuation.resume() }
             }
         }
         view.pieceDrag=PieceDragController(view:view,world:world)

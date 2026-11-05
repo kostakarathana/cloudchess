@@ -114,6 +114,90 @@ NSDictionary *CCPuzzle(NSDictionary *r){
         Search exact(attacker,budget,mate?0:1,start+successGain);
         out[@"forced"]=@(depth>0&&exact.force(b,depth));out[@"nodes"]=@(exact.nodes);return out;
     }
+    if([op isEqual:@"defend"]){
+        // The defender's reply in play, at a strength frozen for the puzzle
+        // (0 forgiving, 1 most resilient). Every candidate is evaluated exactly
+        // against the PLAY objective; strength only chooses among the proven
+        // options, seeded so the same history always gets the same reply. A
+        // budget overrun is unknown (outer handler) and the caller falls back.
+        if(b.turn==attacker||depth<=0)throw runtime_error("Not a defender decision");
+        double strength=r[@"strength"]?max(0.0,min(1.0,[r[@"strength"] doubleValue])):1.0,weak=1-strength;
+        uint64_t seed=[r[@"seed"] unsignedLongLongValue];
+        auto chance=[&](){seed+=0x9e3779b97f4a7c15ULL;uint64_t z=seed;z=(z^(z>>30))*0xbf58476d1ce4e5b9ULL;z=(z^(z>>27))*0x94d049bb133111ebULL;return double((z^(z>>31))>>11)/9007199254740992.0;};
+        const int goal=start+successGain;
+        Search exact(attacker,budget,mate?0:1,goal);
+        struct Option{Move m;Board c;bool wins=false;int value=0;};
+        vector<Option> options;
+        for(auto m:Search::ordered(b))options.push_back({m,b.push(m)});
+        if(options.empty())throw runtime_error("No defense");
+        size_t chosen=0;NSString *style=@"best";
+        // Tie-breaks and a forgiving miss get their own small budget: when it
+        // runs out the proven choice made so far stands.
+        const uint64_t extra=50000;
+        if(mate){
+            const double missRoll=chance(),shortRoll=chance();
+            // Like the all-defenses judge: stop at the first escaping defense.
+            size_t escape=SIZE_MAX;
+            for(size_t i=0;i<options.size();i++){options[i].wins=exact.force(options[i].c,depth-1);if(!options[i].wins){escape=i;break;}}
+            if(escape!=SIZE_MAX){
+                chosen=escape;
+                if(missRoll<0.5*weak*weak){
+                    // A forgiving defender sometimes misses the escape: a proven
+                    // losing reply lets the solver back in.
+                    size_t miss=SIZE_MAX;
+                    for(size_t i=0;i<escape;i++)if(options[i].wins){miss=i;break;}
+                    if(miss==SIZE_MAX){
+                        try{Search probe(attacker,extra,0,goal);for(size_t i=escape+1;i<options.size();i++)if(probe.force(options[i].c,depth-1)){options[i].wins=true;miss=i;break;}}catch(Budget&){}
+                    }
+                    if(miss!=SIZE_MAX){chosen=miss;style=@"miss";}
+                }
+            } else {
+                vector<int> distance(options.size());int longest=-1,shortest=1<<20;
+                for(size_t i=0;i<options.size();i++){distance[i]=exact.distance(options[i].c,depth-1);longest=max(longest,distance[i]);shortest=min(shortest,distance[i]);}
+                if(shortest<longest&&shortRoll<0.5*weak){
+                    for(size_t i=0;i<options.size();i++)if(distance[i]==shortest){chosen=i;break;}
+                    style=@"short";
+                } else {
+                    // Longest resistance, then the fewest winning answers.
+                    for(size_t i=0;i<options.size();i++)if(distance[i]==longest){chosen=i;break;}
+                    try{
+                        Search tie(attacker,extra,0,goal);size_t fewest=SIZE_MAX;
+                        for(size_t i=0;i<options.size();i++)if(distance[i]==longest){
+                            size_t count=tie.winners(options[i].c,longest).size();
+                            if(count<fewest){fewest=count;chosen=i;}
+                        }
+                    }catch(Budget&){}
+                }
+            }
+        } else {
+            int best=10002;
+            for(auto &o:options){o.value=exact.material_value(o.c,depth-1);o.wins=o.value>=10000||(o.value>-10000&&o.value>=goal);best=min(best,o.value);}
+            size_t held=0;for(size_t i=0;i<options.size();i++)if(options[i].value==best){held=i;break;}
+            vector<size_t> back,soft;int nearest=10002,cheapest=10002;
+            for(size_t i=0;i<options.size();i++){int v=options[i].value;if(v>best&&v<=best+2&&v<10000){if(v<nearest){nearest=v;soft.clear();}if(v==nearest)soft.push_back(i);}}
+            for(size_t i=0;i<options.size();i++){int v=options[i].value;if(options[i].wins&&v<10000){if(v<cheapest){cheapest=v;back.clear();}if(v==cheapest)back.push_back(i);}}
+            if(!options[held].wins&&!back.empty()&&chance()<0.5*weak*weak){
+                // A forgiving defender sometimes misses the hold: the cheapest
+                // reply that lets the solver's gain back in (never mate).
+                chosen=back[size_t(chance()*back.size())%back.size()];style=@"miss";
+            } else if(!soft.empty()&&chance()<0.45*pow(weak,1.5)){
+                // A forgiving defender concedes a little material (never mate).
+                chosen=soft[size_t(chance()*soft.size())%soft.size()];style=@"soft";
+            } else {
+                // Least material conceded, then the fewest gaining answers.
+                chosen=held;
+                if(depth-1>0)try{
+                    Search tie(attacker,extra,1,goal);size_t fewest=SIZE_MAX;
+                    for(size_t i=0;i<options.size();i++)if(options[i].value==best){
+                        size_t count=0;
+                        for(auto m:options[i].c.legal())if(tie.material_value(options[i].c.push(m),depth-2)==best)count++;
+                        if(count<fewest){fewest=count;chosen=i;}
+                    }
+                }catch(Budget&){}
+            }
+        }
+        out[@"reply"]=ps(options[chosen].m.uci());out[@"solverWins"]=@(options[chosen].wins);out[@"style"]=style;out[@"nodes"]=@(exact.nodes);return out;
+    }
     if(depth<=0)throw runtime_error("Objective not forced");
     bool forced=false,unknown=false;
     try{forced=search.force(b,depth);}catch(Budget&){if(![op isEqual:@"guide"])throw;unknown=true;}

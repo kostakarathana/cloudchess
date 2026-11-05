@@ -207,6 +207,11 @@ struct ProfileReport:Codable {
 
 /// Account entry, progress, and the report remain entirely icon/graphic based.
 /// VoiceOver exposes the precise estimates, sample sizes, and uncertainty.
+/// Profile analysis is removed from the app for now (2.1): no Settings entry,
+/// no job resume and no imported priors. The code is kept for a later return.
+enum ProfileAnalysisFeature {
+    static let enabled=false
+}
 struct ProfileAnalysisPanel:View {
     @StateObject private var model=ProfileAnalysisModel()
     @Environment(\.scenePhase) private var scenePhase

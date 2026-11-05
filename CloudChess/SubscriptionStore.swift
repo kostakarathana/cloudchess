@@ -20,6 +20,11 @@ import UserMessagingPlatform
     @Published private(set) var trialEligible = true
     @Published private(set) var allowance = AdAllowance()
     @Published private(set) var storageReady = false
+    /// The active plan's next renewal (or its end, once canceled) for the Premium card.
+    struct Renewal: Equatable { var yearly: Bool; var date: Date; var renews: Bool; var trial: Bool }
+    @Published private(set) var renewal: Renewal?
+    @Published private(set) var upsell = PremiumUpsell()
+    private var upsellDefaults: UserDefaults { testDefaults ?? .standard }
     private var updates: Task<Void, Never>?
     private var expiry: Task<Void, Never>?
     private var startup: Task<Void, Never>?
@@ -42,7 +47,11 @@ import UserMessagingPlatform
             if let data = try readLedger() { allowance = try JSONDecoder().decode(AdAllowance.self, from: data) }
             storageReady = true
         } catch { message = "Your free puzzles couldn’t be loaded. Please try again." }
+        if let data = upsellDefaults.data(forKey: "cloudchess.premiumUpsell"), let saved = try? JSONDecoder().decode(PremiumUpsell.self, from: data) { upsell = saved }
         #if DEBUG
+        if ProcessInfo.processInfo.arguments.contains("--uitesting"), !ProcessInfo.processInfo.arguments.contains("--preserve-allowance") {
+            upsellDefaults.removeObject(forKey: "cloudchess.premiumUpsell"); upsell = PremiumUpsell()
+        }
         if ProcessInfo.processInfo.arguments.contains("--ad-break-due"), testDefaults != nil {
             // An introduction already played long ago, with no puzzles left.
             let past = now.addingTimeInterval(-7200)
@@ -125,6 +134,7 @@ import UserMessagingPlatform
         let revision = entitlementRevision
         var active = false
         var nextCheck: Date?
+        var current: StoreKit.Transaction?
         for await result in Transaction.currentEntitlements {
             guard case .verified(let transaction) = result,
                   Self.productIDs.contains(transaction.productID),
@@ -132,8 +142,21 @@ import UserMessagingPlatform
             // currentEntitlements includes subscribed and billing-grace-period access.
             active = true
             if let end = transaction.expirationDate, end > now { nextCheck = min(nextCheck ?? end, end) }
+            if (transaction.expirationDate ?? .distantPast) >= (current?.expirationDate ?? .distantPast) { current = transaction }
         }
         guard revision == entitlementRevision else { return }
+        let summary = await Self.renewal(for: current)
+        guard revision == entitlementRevision else { return }
+        renewal = active ? summary : nil
+        #if DEBUG
+        // Premium card fixture (the simulator's StoreKit test session is unreliable):
+        // --premium-renewal=<yearly|monthly>-<renews|ends|trial>
+        if ProcessInfo.processInfo.arguments.contains("--uitesting"),
+           let fixture = ProcessInfo.processInfo.arguments.first(where: { $0.hasPrefix("--premium-renewal=") })?.dropFirst(18).split(separator: "-"), fixture.count == 2 {
+            active = true
+            renewal = Renewal(yearly: fixture[0] == "yearly", date: Date(timeIntervalSince1970: 1_825_401_600), renews: fixture[1] != "ends", trial: fixture[1] == "trial")
+        }
+        #endif
         unlimited = active; checking = false
         if active { message = nil }
         if let group = (monthly ?? annual)?.subscription?.subscriptionGroupID {
@@ -147,6 +170,21 @@ import UserMessagingPlatform
             do { try await Task.sleep(for: .seconds(delay)) } catch { return }
             await self?.refreshEntitlements()
         }
+    }
+    /// Renewal details from StoreKit: the auto-renew preference (a pending plan
+    /// change), its renewal date and whether it will renew at all.
+    private static func renewal(for transaction: StoreKit.Transaction?) async -> Renewal? {
+        guard let transaction, let end = transaction.expirationDate else { return nil }
+        var renews = true, date = end, plan = transaction.productID
+        if let status = await transaction.subscriptionStatus, case .verified(let info) = status.renewalInfo {
+            renews = info.willAutoRenew
+            if let preferred = info.autoRenewPreference, productIDs.contains(preferred) { plan = preferred }
+            if let next = info.renewalDate { date = next }
+        }
+        let trial: Bool
+        if #available(iOS 17.2, *) { trial = transaction.offer?.type == .introductory }
+        else { trial = transaction.offerType == .introductory }
+        return Renewal(yearly: plan == annualID, date: date, renews: renews, trial: trial)
     }
     func loadProducts() async {
         guard !loadingProduct else { return }
@@ -239,6 +277,19 @@ import UserMessagingPlatform
         let at = now
         try await update { $0.grant(kind, at: at) }
     }
+    /// After a completed ad break: whether to show the Premium card now.
+    func noteAdBreakForUpsell(online: Bool) -> Bool {
+        guard !unlimited else { return false }
+        var next = upsell
+        var roll: (ClosedRange<Int>) -> Int = { Int.random(in: $0) }
+        #if DEBUG
+        if let every = ProcessInfo.processInfo.arguments.first(where: { $0.hasPrefix("--upsell-every=") }).flatMap({ Int($0.dropFirst(15)) }) { roll = { _ in every } }
+        #endif
+        let show = next.noteBreak(at: now, eligible: online && !planOptions.isEmpty, roll: roll)
+        upsell = next; saveUpsell(); return show
+    }
+    func declinedUpsell() { guard !unlimited else { return }; upsell.declined(); saveUpsell() }
+    private func saveUpsell() { if let data = try? JSONEncoder().encode(upsell) { upsellDefaults.set(data, forKey: "cloudchess.premiumUpsell") } }
     enum AccessError: Error { case adBreak, storage }
     private var key: [String: Any] { [kSecClass as String:kSecClassGenericPassword, kSecAttrService as String:service, kSecAttrAccount as String:"allowance"] }
     private func readLedger() throws -> Data? {
@@ -404,21 +455,47 @@ extension Product.SubscriptionPeriod {
 
 struct UnlimitedPuzzlePanel: View {
     @ObservedObject var store: SubscriptionStore
+    /// Shown by the post-ad-break prompt rather than opened by the player.
+    var prompted = false
     let close: () -> Void
     @State private var manage = false
     @State private var choice = SubscriptionStore.annualID
+    @Environment(\.dynamicTypeSize) private var textSize
     private let ink = Color(rgb:0x192E49)
     private var selected: SubscriptionStore.PlanOption? { store.planOptions.first { $0.id == choice } ?? store.planOptions.first }
 
     var body: some View {
         CloudPopup(title: "CloudChess Premium", symbol: "cloud.fill", dismiss: close) {
             VStack(alignment: .leading, spacing: 12) {
-                benefit("infinity", "Unlimited puzzles")
-                benefit("play.slash", "No ads")
-                benefit("airplane", "Play fully offline")
+                if !store.unlimited, let trials = trialSummary {
+                    HStack(spacing: 10) {
+                        Image(systemName: "gift.fill").font(.system(size: 20, weight: .semibold)).accessibilityHidden(true)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Try Premium free").font(.headline)
+                            Text(trials).font(.subheadline).fixedSize(horizontal: false, vertical: true)
+                        }
+                    }.foregroundStyle(.white).padding(14).frame(maxWidth: .infinity, alignment: .leading)
+                        .background(Color(rgb: 0x2E8B57), in: RoundedRectangle(cornerRadius: 18))
+                        .accessibilityElement(children: .combine).accessibilityIdentifier("subscription-trial-banner")
+                        .dynamicTypeSize(...DynamicTypeSize.accessibility2)
+                }
+                if store.unlimited || textSize.isAccessibilitySize {
+                    benefit("infinity", "Unlimited puzzles")
+                    benefit("play.slash", "No ads")
+                    benefit("airplane", "Play fully offline")
+                } else {
+                    // Compact tiles leave room for both plans without scrolling.
+                    HStack(spacing: 8) {
+                        tile("infinity", "Unlimited puzzles"); tile("play.slash", "No ads"); tile("airplane", "Play fully offline")
+                    }
+                }
                 if store.unlimited {
                     Label("Premium is active", systemImage: "checkmark.seal.fill")
                         .font(.headline).padding(.top, 6).accessibilityIdentifier("subscription-active")
+                    if let renewal = store.renewal {
+                        Text(Self.renewalText(renewal)).font(.subheadline).foregroundStyle(ink.opacity(0.75))
+                            .fixedSize(horizontal: false, vertical: true).accessibilityIdentifier("subscription-renewal")
+                    }
                 } else if store.planOptions.isEmpty {
                     Group {
                         if store.loadingProduct { ProgressView().accessibilityLabel("Loading subscription prices") }
@@ -461,6 +538,9 @@ struct UnlimitedPuzzlePanel: View {
                             .accessibilityIdentifier("subscription-restore")
                     }
                 }.font(.footnote).buttonStyle(CloudPressStyle()).frame(minHeight: 44)
+                if prompted && !store.unlimited {
+                    Button("Not now", action: close).font(.footnote.weight(.semibold)).frame(minHeight: 44).accessibilityIdentifier("subscription-not-now")
+                }
                 if store.message != nil && !store.unlimited {
                     Button("Try again") { Task { await store.retry() } }
                         .font(.footnote).frame(minHeight: 44).disabled(store.purchasing)
@@ -470,6 +550,25 @@ struct UnlimitedPuzzlePanel: View {
         }.manageSubscriptionsSheet(isPresented: $manage)
         .task { await store.start(); if store.products.isEmpty { await store.loadProducts() } }
         .accessibilityIdentifier("subscription-panel")
+    }
+    /// "1 month free with yearly · 7 days free with monthly", from the eligible offers.
+    private var trialSummary: String? {
+        let parts = store.planOptions.compactMap { option in option.trialDuration.map { "\($0) free with \(option.yearly ? "yearly" : "monthly")" } }
+        return parts.isEmpty ? nil : parts.joined(separator: " · ")
+    }
+    static func renewalText(_ renewal: SubscriptionStore.Renewal) -> String {
+        let plan = renewal.yearly ? "yearly" : "monthly", date = renewal.date.formatted(date: .long, time: .omitted)
+        if !renewal.renews { return "Your \(plan) plan ends on \(date)." }
+        if renewal.trial { return "Your free trial ends on \(date), then your \(plan) plan renews automatically." }
+        return "Your \(plan) plan renews on \(date)."
+    }
+    private func tile(_ symbol: String, _ title: String) -> some View {
+        VStack(spacing: 6) {
+            Image(systemName: symbol).font(.system(size: 19, weight: .medium)).accessibilityHidden(true)
+            Text(title).font(.caption.weight(.semibold)).multilineTextAlignment(.center).fixedSize(horizontal: false, vertical: true)
+        }.frame(maxWidth: .infinity, minHeight: 64).padding(.vertical, 6).padding(.horizontal, 4)
+            .background(.white.opacity(0.55), in: RoundedRectangle(cornerRadius: 14))
+            .accessibilityElement(children: .combine)
     }
     private func benefit(_ symbol: String, _ title: String) -> some View {
         HStack(spacing: 12) {

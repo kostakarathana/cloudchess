@@ -81,7 +81,7 @@ struct BoardDimensions:Codable,Equatable,Hashable {
         var points:[SIMD3<Float>]=[]
         for x in [-Float(columns)/2-0.24,Float(columns)/2+0.24] {
             for z in [-Float(rows)/2-0.24,Float(rows)/2+0.24] {
-                for y:Float in [-0.31,0.12] {points.append(SIMD3(x,y,z))}
+                for y:Float in [-0.71,0.12] {points.append(SIMD3(x,y,z))}
             }
         }
         for x in [-Float(columns-1)/2-0.38,Float(columns-1)/2+0.38] {

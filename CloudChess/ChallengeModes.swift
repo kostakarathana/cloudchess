@@ -269,10 +269,14 @@ enum TurnAnalysis {
     /// matching: histories, root constraints and full budgets remain distinct.
     static func keepsPreparation(_ r:[String:Any],puzzle:TrainingPuzzle,history:[String],known:Set<String>,source:String?,move:String?,replies:[String:String]=[:])->Bool {
         if puzzle.kind == .tactics {
-            guard let candidate=r["candidate"] as? String,
-                  move.map({$0==candidate}) ?? source.map({candidate.hasPrefix($0)}) ?? false else{return false}
-            var expected=puzzle.request("judge",moves:history)
-            expected["candidate"]=candidate;expected["budget"]=1_000_000
+            // The adaptive defender's exact reply to a likely move: same puzzle,
+            // the current history plus that move, full budget.
+            guard r["operation"] as? String=="defend",let moves=r["moves"] as? [String],moves.count==history.count+1,
+                  Array(moves.prefix(history.count))==history,let candidate=moves.last,
+                  move.map({$0==candidate}) ?? source.map({candidate.hasPrefix($0)}) ?? false,
+                  r["budget"] as? Int==1_000_000,r["strength"] is Double || r["strength"] is Int,r["seed"] is Int else{return false}
+            var expected=puzzle.request("defend",moves:moves)
+            for key in ["strength","seed","budget"] {expected[key]=r[key]}
             return NSDictionary(dictionary:expected).isEqual(to:r)
         }
         guard puzzle.kind != .whosWinning,

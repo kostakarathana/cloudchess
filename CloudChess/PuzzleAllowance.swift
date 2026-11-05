@@ -99,3 +99,28 @@ enum PlanPricing {
         return percent > 0 ? percent : nil
     }
 }
+
+/// After every 2–4 completed ad breaks a free player sees the Premium card once
+/// (features and free trials) at the natural pause right after the break.
+/// Never more than once an hour; each "not now" stretches the interval by one
+/// break, up to two. A due prompt waits while it can't be shown (offline, no
+/// products) instead of being skipped.
+struct PremiumUpsell: Codable, Equatable {
+    static let range = 2...4
+    static let minimumGap: TimeInterval = 3600
+    static let maximumBackoff = 2
+    private(set) var breaks = 0
+    private(set) var due: Int?
+    private(set) var last: Date?
+    private(set) var declines = 0
+    private(set) var shown = 0
+    /// Counts one completed ad break; true when the Premium card should show now.
+    mutating func noteBreak(at date: Date, eligible: Bool, roll: (ClosedRange<Int>) -> Int) -> Bool {
+        breaks += 1
+        if due == nil { due = roll(Self.range) + min(declines, Self.maximumBackoff) }
+        guard eligible, breaks >= due ?? Int.max, last.map({ date.timeIntervalSince($0) >= Self.minimumGap }) ?? true else { return false }
+        breaks = 0; due = nil; last = date; shown += 1
+        return true
+    }
+    mutating func declined() { declines = min(declines + 1, Self.maximumBackoff) }
+}

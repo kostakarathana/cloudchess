@@ -2,7 +2,7 @@
 
 An on-device SwiftUI, SceneKit and Metal chess puzzle app for iPhone and iPad.
 Puzzle generation, Stockfish analysis and adaptive coaching run on the device.
-Optional public-game imports connect directly to Chess.com or Lichess.
+Profile analysis (public Chess.com and Lichess game imports) is switched off in 2.1; its code remains in this source.
 
 ## License
 
@@ -37,7 +37,7 @@ networks, puzzle bank and other resources are unchanged from that archive.
 Collection and other modes are paused; only "Mate in x" and "Improve position in
 x" puzzles are active.
 
-Version 2.0 supports free play with rewarded ads. It links Google's Mobile Ads
+Versions 2.0 and later support free play with rewarded ads. They link Google's Mobile Ads
 SDK and User Messaging Platform through Swift Package Manager (versions pinned in
 `CloudChess.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved`).
 Those are Google's own prebuilt components, downloaded from Google under Google's

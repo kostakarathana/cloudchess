@@ -179,7 +179,29 @@ struct PuzzleSession:Codable {
         if let off=offTrack,moves.count<=off {offTrack=nil}
     }
     var instructionType:String {puzzle.kind == .tactics ? (puzzle.mate>0 ? "mate":"improvement"):puzzle.kind.rawValue}
+    /// The adaptive defender's strength, frozen with the opponent rating at
+    /// `begin`. Older sessions without one keep the full-strength defense.
+    var defenseStrength:Double {PuzzleDefense.strength(opponent:opponentElo)}
 
+}
+/// The tactical defender adapts to the learner: its strength follows the
+/// frozen opponent rating (the puzzle's target level), from forgiving (0: may
+/// miss an escape, resist briefly or concede a little material) to most
+/// resilient (1: longest resistance, every escape, least material, fewest
+/// winning answers). A provisional training scale, not human Elo.
+enum PuzzleDefense {
+    static func strength(opponent:Double?)->Double {
+        guard let opponent,opponent.isFinite else{return 1}
+        return min(1,max(0,(opponent-800)/1200))
+    }
+    /// Skill evidence treats a puzzle against a forgiving defender as up to 120 points easier.
+    static func ratingShift(strength:Double)->Double {120*(1-min(1,max(0,strength)))}
+    /// Stable per session and ply, so a resumed or repeated history gets the same reply.
+    static func seed(session:String,ply:Int)->Int {
+        var hash:UInt64=0xcbf29ce484222325
+        for byte in "\(session)#\(ply)".utf8 {hash=(hash^UInt64(byte))&*0x100000001b3}
+        return Int(hash & 0x7fffffff)
+    }
 }
 struct PuzzleReview:Codable {var puzzle:TrainingPuzzle;var due:Int}
 /// Persisted after a failed, lost or skipped tactical puzzle. `until` is a
@@ -276,12 +298,15 @@ struct AdaptivePuzzleCoach:Codable {
         return max(0,(scoring?.total ?? 0)-penalty)
     }
     /// Score is progression pressure, not evidence that the player gained Elo.
-    /// Keep the Bayesian skill estimate separate for honest outcome learning.
+    /// The Bayesian skill estimate stays separate and earns weight as evidence
+    /// accumulates (25% for a new player, approaching 60%), so a strong player
+    /// is not held back by a small score and a struggling one eases sooner.
     func challengeLevel(_ kind:ChallengeKind)->Double {
         let score=currentScore.isFinite ? min(1e12,currentScore):0
         let progression=850+300*log2(1+score/100000)
-        return min(3000,max(400,0.75*progression+0.25*modeAbility(kind)))
+        return min(3000,max(400,(1-skillWeight)*progression+skillWeight*modeAbility(kind)))
     }
+    var skillWeight:Double {let evidence=Double(max(0,ability.evidence));return 0.25+0.35*evidence/(evidence+20)}
     func targetRating(for kind:ChallengeKind)->Double {
         let goal=target(for:kind)
         return min(3000,max(400,challengeLevel(kind)-240*log(goal/(1-goal))))
@@ -338,9 +363,10 @@ struct AdaptivePuzzleCoach:Codable {
     }
     func allowsNextPuzzle(_ p:TrainingPuzzle,now:Double)->Bool {p.repeatKeys.isDisjoint(with:recencyPuzzleKeys.union(cooldownKeys(now:now))) && !retired(p)}
     func allowsNextPuzzle(_ p:TrainingPuzzle)->Bool {allowsNextPuzzle(p,now:Date().timeIntervalSince1970)}
-    /// Two consecutive totals per period so the alternating family always
-    /// gets one review slot; prepared handoffs yield on the same slots.
-    var reviewSlot:Bool {total%4>=2}
+    /// Two consecutive totals per period of eight so the alternating family
+    /// always gets one review slot without old puzzles crowding out harder
+    /// ones; prepared handoffs yield on the same slots.
+    var reviewSlot:Bool {total%8>=6}
     mutating func selectChallengeKind(personalAvailable:Bool)->ChallengeKind {
         // Both active puzzle families use the all-defenses tactical prover.
         // Their family/shape draw happens once before candidate ranking.
@@ -433,7 +459,7 @@ struct AdaptivePuzzleCoach:Codable {
     }
     func eligibleReview(_ review:PuzzleReview)->Bool {
         let p=probability(review.puzzle,level:challengeLevel(.tactics))
-        return review.puzzle.kind == .tactics && (focusedSelection?.matches(review.puzzle) ?? true) && allowsNextPuzzle(review.puzzle) && review.due<=total && p>=0.25 && p<=0.95 && (preferredColumns==nil || (review.puzzle.columns==preferredColumns && review.puzzle.rows==preferredRows))
+        return review.puzzle.kind == .tactics && (focusedSelection?.matches(review.puzzle) ?? true) && allowsNextPuzzle(review.puzzle) && review.due<=total && p>=0.30 && p<=0.85 && (preferredColumns==nil || (review.puzzle.columns==preferredColumns && review.puzzle.rows==preferredRows))
     }
     mutating func candidates(_ bank:[TrainingPuzzle])->[TrainingPuzzle] {
         prepareFocusedSelection()
@@ -512,7 +538,10 @@ struct AdaptivePuzzleCoach:Codable {
         guard var s=session,!s.recorded,!attempts.contains(where:{$0.id==s.id}) else{return false}
         let p=s.puzzle,clean = !skipped && s.mistakes==0 && s.hints==0
         var score=scoring ?? ChallengeScore();score.settle(s,success:!skipped);scoring=score;s.succeeded = !skipped
-        let predicted=probability(p)
+        // A forgiving defender made the same item easier: honest skill evidence
+        // treats it as lower rated. Points still use the item's own rating.
+        var judged=p;if p.kind == .tactics {judged.rating-=PuzzleDefense.ratingShift(strength:s.defenseStrength)}
+        let predicted=probability(judged)
         // Winning a long game with a corrected slip is still a win. Assistance
         // discounts mastery; free open-play errors reduce confidence, not outcome.
         let unassistedWin = !skipped && s.hints==0 && (!p.kind.usesHearts || s.mistakes==0)

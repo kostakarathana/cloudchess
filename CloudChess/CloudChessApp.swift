@@ -19,11 +19,19 @@ struct CloudChessView:View {
     @State private var showingLegal=false
     @State private var scoreEmphasis=false
     @State private var displayedScoreEvent=0
+    /// Measured header bottom and bottom-controls top (global points): the board fits between.
+    @State private var headerBottom:CGFloat=0
+    @State private var dockTop:CGFloat=0
+    @State private var barTop:CGFloat?
+    private func updateHUDEdges() {
+        let bottom=min(dockTop>0 ? dockTop:.infinity,barTop ?? .infinity)
+        game.world.setHUDEdges(top:Float(headerBottom),bottom:bottom.isFinite ? Float(bottom):0)
+    }
     private let ink=Color(red:0.10,green:0.18,blue:0.29)
     /// Pale ink for the few HUD glyphs drawn directly on the sky; cards and
     /// popups keep the global ink on their white chrome.
     private var hudInk:Color {game.night ? Color(red:0.93,green:0.96,blue:1):ink}
-    private var modalVisible:Bool {game.showSubscription || game.showAdBreak || game.showOffline || game.houseAd != nil || settings || showingProfile || showingLegal || game.showInfo || game.showReturn || game.showSkip || game.showHint || !game.promotion.isEmpty || game.phase=="error"}
+    private var modalVisible:Bool {game.showSubscription || game.showAdBreak || game.showOffline || game.houseAd != nil || settings || showingProfile || showingLegal || game.showInfo || game.showSkip || game.showHint || game.showNoWin || game.showFailure || !game.promotion.isEmpty || game.phase=="error"}
     private var sceneryPaused:Bool {modalVisible}
     /// DEBUG tutorial-art captures show only the board (and its material bar).
     private var captureHUD:Double {
@@ -37,9 +45,9 @@ struct CloudChessView:View {
             ZStack {
                 ZStack {
                 CloudAtmosphere(motion:!game.isGenerating && game.motion && !reduceMotion && !game.presentingReward && !sceneryPaused,night:game.night,field:game.world.cloudField).ignoresSafeArea()
-                ChessSceneView(world:game.world,revision:game.revision,concealed:!game.boardRevealed || game.showReturn || game.presentingReward,paused:sceneryPaused,inputBlocked:modalVisible || game.replayActive || game.journeyActive)
-                    .ignoresSafeArea().opacity(game.boardRevealed && !game.showReturn && !game.presentingReward ? 1:0)
-                    .accessibilityHidden(modalVisible || !game.boardRevealed || game.showInfo || game.showReturn || game.replayActive || game.journeyActive || game.presentingReward).accessibilityIdentifier("chessboard")
+                ChessSceneView(world:game.world,revision:game.revision,concealed:!game.boardRevealed || game.presentingReward,paused:sceneryPaused,inputBlocked:modalVisible || game.replayActive || game.journeyActive)
+                    .ignoresSafeArea().opacity(game.boardRevealed && !game.presentingReward ? 1:0)
+                    .accessibilityHidden(modalVisible || !game.boardRevealed || game.showInfo || game.replayActive || game.journeyActive || game.presentingReward).accessibilityIdentifier("chessboard")
                 if !game.journeyActive && !game.replayActive {
                 VStack(spacing:0) {
                     HStack {
@@ -50,24 +58,29 @@ struct CloudChessView:View {
                         Button {withAnimation(reduceMotion || !game.motion ? nil:.spring(response:0.4,dampingFraction:0.8)){settings.toggle()}} label:{symbol(settings ? "xmark":"slider.horizontal.3",size:18)}.accessibilityLabel("Settings")
                     }.foregroundStyle(hudInk).padding(.horizontal,27).padding(.top,18).opacity(captureHUD)
                     // Before any puzzle exists (an ad break or offline card at launch) there is no challenge to describe.
-                    challengeCloud.padding(.top,12).padding(.horizontal,22).opacity(game.puzzle == nil && game.challengeNotice == nil ? 0:captureHUD).accessibilityHidden(game.puzzle == nil && game.challengeNotice == nil)
+                    challengeCloud
+                        .onGeometryChange(for:CGFloat.self,of:{$0.frame(in:.global).maxY}){headerBottom=$0;updateHUDEdges()}
+                        .padding(.top,12).padding(.horizontal,22).opacity(game.puzzle == nil && game.challengeNotice == nil ? 0:captureHUD).accessibilityHidden(game.puzzle == nil && game.challengeNotice == nil)
                     Spacer(minLength:0)
                     
-                    if let activity=game.evaluationActivity,!game.isGenerating,!game.showInfo,!game.showReturn {
+                    if let activity=game.evaluationActivity,!game.isGenerating,!game.showInfo {
                         EngineThinkingIndicator(activity:activity,reduced:reduceMotion || !game.motion)
                             .padding(.bottom,14).allowsHitTesting(false)
                     }
-                    if game.challengeKind == .tenMoves,game.puzzle != nil,!game.showInfo,!game.showReturn,!game.presentingReward {
+                    if game.challengeKind == .tenMoves,game.puzzle != nil,!game.showInfo,!game.presentingReward {
                         HorizontalEvaluationBar(pieceTheme:game.displayedPieces,centipawns:game.coach.session?.evaluation ?? 0,solverWhite:game.solverWhite,reducedMotion:reduceMotion || !game.motion,pending:game.evaluationPending)
                             .opacity(game.evaluationPending ? 0.35:1)
                             .accessibilityHidden(game.evaluationPending)
                             .frame(maxWidth:340).padding(.horizontal,24).padding(.bottom,16).allowsHitTesting(false)
                     }
-                    if game.showsMaterialBar,!game.showInfo,!game.showReturn,!game.presentingReward {
+                    if game.showsMaterialBar,!game.showInfo,!game.presentingReward {
                         MaterialBar(pieceTheme:game.displayedPieces,balance:game.materialBalance,start:game.startingMaterial,solverWhite:game.solverWhite,reducedMotion:reduceMotion || !game.motion)
-                            .frame(maxWidth:340).padding(.horizontal,24).padding(.bottom,16).allowsHitTesting(false)
+                            .frame(maxWidth:340)
+                            .onGeometryChange(for:CGFloat.self,of:{$0.frame(in:.global).minY}){barTop=$0;updateHUDEdges()}
+                            .onDisappear{barTop=nil;updateHUDEdges()}
+                            .padding(.horizontal,24).padding(.bottom,16).allowsHitTesting(false)
                     }
-                    if game.challengeKind == .whosWinning,game.puzzle != nil,!game.showInfo,!game.showReturn {
+                    if game.challengeKind == .whosWinning,game.puzzle != nil,!game.showInfo {
                         JudgmentControls(game:game).padding(.horizontal,22).padding(.bottom,12)
                     }
                     if game.undoTip != nil,!modalVisible {
@@ -79,8 +92,10 @@ struct CloudChessView:View {
                     // Undo is free and immediate; a hint confirms its reward cost first.
                     HStack(spacing:0) {
                         control("arrow.counterclockwise","Undo move",disabled:!game.canUndo){Task{await game.undo()}}
-                        control("lightbulb","Hint",disabled:!game.canHint){game.requestHint()}
-                    }.padding(.horizontal,12).padding(.vertical,4).background {CloudChromeSurface(puffiness:0.45)}.frame(width:144).padding(.bottom,32).opacity(captureHUD)
+                        control("lightbulb","Hint",disabled:!game.canHint){Task{await game.requestHint()}}
+                    }.padding(.horizontal,12).padding(.vertical,4).background {CloudChromeSurface(puffiness:0.45)}.frame(width:144)
+                        .onGeometryChange(for:CGFloat.self,of:{$0.frame(in:.global).minY}){dockTop=$0;updateHUDEdges()}
+                        .padding(.bottom,32).opacity(captureHUD)
                     }
                 }.overlay(alignment:.bottomTrailing) {
                     Button {game.night.toggle();if game.sound {UISelectionFeedbackGenerator().selectionChanged()}} label:{
@@ -92,7 +107,7 @@ struct CloudChessView:View {
                     }.padding(.trailing,27).padding(.bottom,32).opacity(captureHUD)
                         .accessibilityLabel("Night mode").accessibilityValue(game.night ? "On":"Off")
                         .accessibilityAddTraits(game.night ? .isSelected:[]).accessibilityIdentifier("night-toggle")
-                }.opacity(game.isGenerating || game.journeyActive || game.replayActive ? 0:1).allowsHitTesting(!modalVisible && !game.isGenerating && !game.journeyActive && !game.replayActive && !game.presentingReward).accessibilityHidden(modalVisible || game.isGenerating || game.journeyActive || game.replayActive || game.showInfo || game.showReturn || game.presentingReward)
+                }.opacity(game.isGenerating || game.journeyActive || game.replayActive ? 0:1).allowsHitTesting(!modalVisible && !game.isGenerating && !game.journeyActive && !game.replayActive && !game.presentingReward).accessibilityHidden(modalVisible || game.isGenerating || game.journeyActive || game.replayActive || game.showInfo || game.presentingReward)
                 }
                 if settings {settingsPanel.zIndex(5)}
                 if !game.promotion.isEmpty {promotionPanel.zIndex(5)}
@@ -117,9 +132,8 @@ struct CloudChessView:View {
                     }.zIndex(12)
                 }
 
-                if game.showInfo || game.showReturn {
+                if game.showInfo {
                     ChallengeIntermission(
-                        returning:game.showReturn,
                         firstIntroduction:game.firstTypeIntroduction,
                         title:game.challengeTitle,
                         explanation:game.instructionExplanation,
@@ -128,10 +142,12 @@ struct CloudChessView:View {
                         rewardMultiplier:game.challengeKind.rewardMultiplier,
                         reducedMotion:reduceMotion || !game.motion,
                         busy:game.busy,
-                        proceed:{Task{if game.showReturn {await game.continueAfterReturn()} else {await game.acknowledgeInstructions()}}}
+                        proceed:{Task{await game.acknowledgeInstructions()}}
                     ).transition(.opacity).zIndex(10)
                 }
                 if game.showSkip || game.showHint {confirmationPanel.zIndex(15)}
+                if game.showNoWin {noWinPanel.zIndex(15)}
+                if game.showFailure {failurePanel.zIndex(14)}
                 if game.showAdBreak,let offer=game.adOffer,!game.showSubscription {
                     AdBreakPanel(offer:offer,busy:game.busy,watch:{kind in Task{await game.watchAdBreak(kind)}},premium:{game.showSubscription=true}).zIndex(16)
                 }
@@ -142,7 +158,7 @@ struct CloudChessView:View {
                     HouseAdView(index:ad.index,count:ad.count,seconds:game.houseAdSeconds,finish:{game.finishHouseAd()},premium:{game.showSubscription=true}).id(ad.id).transition(.opacity).zIndex(18)
                 }
                 if game.showSubscription {
-                    UnlimitedPuzzlePanel(store:subscription,close:{game.showSubscription=false;if subscription.unlimited {Task{await game.continueWithAccess()}}}).zIndex(20)
+                    UnlimitedPuzzlePanel(store:subscription,prompted:game.premiumPrompt,close:{game.closeSubscription()}).zIndex(20)
                 }
                 if game.waitingForAccess && !game.showSubscription && !game.showAdBreak && !game.showOffline && game.houseAd == nil {
                     VStack { Spacer();Button("Continue playing") {Task{await game.continueWithAccess()}}.buttonStyle(CloudActionStyle()).padding(.bottom,90) }.zIndex(4)
@@ -161,7 +177,7 @@ struct CloudChessView:View {
         .task{game.configureMotion(reduced:reduceMotion);game.configureNight(animated:false);await game.start()}
         // Switching between cards remains one overlay transaction and one save.
         .onChange(of:modalVisible || game.replayActive){_,_ in updateOverlay()}
-        .onChange(of:scenePhase){_,phase in game.setActive(phase == .active);if phase == .active {Task{await subscription.refreshEntitlements()}};if phase == .background {settings=false;showingProfile=false;showingLegal=false;game.showSkip=false;game.showHint=false;game.promotion=[];game.didEnterBackground()};if phase != .active {game.world.onCancelDrag?()};if phase == .background {Task{await OnDeviceProfiles.shared.pause()}}}
+        .onChange(of:scenePhase){_,phase in game.setActive(phase == .active);if phase == .active {Task{await subscription.refreshEntitlements()}};if phase == .background {settings=false;showingProfile=false;showingLegal=false;game.showSkip=false;game.showHint=false;game.showNoWin=false;game.promotion=[];game.didEnterBackground()};if phase != .active {game.world.onCancelDrag?()};if phase == .background,ProfileAnalysisFeature.enabled {Task{await OnDeviceProfiles.shared.pause()}}}
         .onChange(of:game.motion){_,_ in game.configureMotion(reduced:reduceMotion)}
         .onChange(of:connectivity.online){_,_ in Task{await game.accessConditionsChanged()}}
         .onChange(of:subscription.unlimited){_,unlimited in if unlimited && game.waitingForAccess && !game.showSubscription {Task{await game.continueWithAccess()}}}
@@ -173,7 +189,7 @@ struct CloudChessView:View {
     }
     private var replayControls:some View {
         VStack {
-            HStack {Spacer();Button {game.closeReplay()} label:{symbol("xmark",size:18).padding(14).background(.regularMaterial,in:Circle())}
+            HStack {Spacer();Button {game.dismissReplay()} label:{symbol("xmark",size:18).padding(14).background(.regularMaterial,in:Circle())}
                 .accessibilityLabel("Close replay").accessibilityIdentifier("close-replay")}.padding(24)
             Spacer()
             VStack(spacing:14) {
@@ -181,9 +197,11 @@ struct CloudChessView:View {
                     Circle().fill(ink.opacity(i<=game.replayIndex ? 0.8:0.15)).frame(width:6,height:6)
                 }}.accessibilityElement().accessibilityLabel("Replay progress").accessibilityValue("\(game.replayIndex) of \(max(0,game.replayCount-1)) moves")
                 HStack(spacing:24) {
-                    Button {game.stepReplay(-1)} label:{symbol("backward.end",size:20)}.disabled(game.replayIndex==0).accessibilityLabel("Previous replay move").accessibilityIdentifier("replay-back")
-                    Button {game.toggleReplay()} label:{symbol(game.replayPlaying ? "pause.fill":"play.fill",size:22)}.accessibilityLabel(game.replayPlaying ? "Pause replay":"Play replay").accessibilityIdentifier("replay-play")
-                    Button {game.stepReplay(1)} label:{symbol("forward.end",size:20)}.disabled(game.replayIndex>=game.replayCount-1).accessibilityLabel("Next replay move").accessibilityIdentifier("replay-next")
+                    Button {game.stepReplay(-1)} label:{symbol(game.replayManual ? "arrow.left":"backward.end",size:20)}.disabled(game.replayIndex==0).accessibilityLabel("Previous replay move").accessibilityIdentifier("replay-back")
+                    if !game.replayManual {
+                        Button {game.toggleReplay()} label:{symbol(game.replayPlaying ? "pause.fill":"play.fill",size:22)}.accessibilityLabel(game.replayPlaying ? "Pause replay":"Play replay").accessibilityIdentifier("replay-play")
+                    }
+                    Button {game.stepReplay(1)} label:{symbol(game.replayManual ? "arrow.right":"forward.end",size:20)}.disabled(game.replayIndex>=game.replayCount-1).accessibilityLabel("Next replay move").accessibilityIdentifier("replay-next")
                 }
             }.padding(.horizontal,28).padding(.vertical,18).background(.regularMaterial,in:RoundedRectangle(cornerRadius:28)).shadow(color:ink.opacity(0.10),radius:18,y:6).padding(.bottom,32)
         }.accessibilityElement(children:.contain).accessibilityIdentifier("replay-controls")
@@ -279,7 +297,7 @@ struct CloudChessView:View {
         CloudPopup(title:"Settings",symbol:"slider.horizontal.3",dismiss:{settings=false}) {
             VStack(spacing:10) {
                 menuRow(subscription.unlimited ? "Premium":"Go Premium",symbol:"cloud.fill") {settings=false;game.showSubscription=true}
-                menuRow("Profile analysis",symbol:"person.crop.circle") {settings=false;showingProfile=true}
+                if ProfileAnalysisFeature.enabled {menuRow("Profile analysis",symbol:"person.crop.circle") {settings=false;showingProfile=true}}
                 menuRow("Privacy & support",symbol:"hand.raised") {settings=false;showingLegal=true}
                 if ads.privacyOptionsRequired {menuRow("Ad privacy choices",symbol:"checkmark.shield") {settings=false;Task{await ads.presentPrivacyOptions()}}}
                 Divider().padding(.vertical,4)
@@ -325,6 +343,35 @@ struct CloudChessView:View {
             }
         }
     }
+    private var noWinPanel:some View {
+        CloudPopup(title:"No winning moves in this position!",symbol:"lightbulb.slash",dismiss:{game.showNoWin=false}) {
+            Text("Maybe undo a few moves...").font(.body).foregroundStyle(ink.opacity(0.75)).fixedSize(horizontal:false,vertical:true)
+                .accessibilityIdentifier("no-win-message")
+        } actions: {
+            VStack(spacing:8) {
+                Button {Task{await game.undoFromNoWin()}} label:{Label("Undo move",systemImage:"arrow.counterclockwise").frame(maxWidth:.infinity)}
+                    .buttonStyle(CloudActionStyle()).disabled(game.busy || !game.canUndo).accessibilityIdentifier("no-win-undo")
+                Button("Keep thinking") {game.showNoWin=false}.font(.headline).dynamicTypeSize(...DynamicTypeSize.accessibility2).frame(maxWidth:.infinity,minHeight:48).accessibilityIdentifier("no-win-close")
+            }
+        }.accessibilityIdentifier("no-win-panel")
+    }
+    /// Out of hearts: after the shake, the solution, a guided solve or the next puzzle.
+    private var failurePanel:some View {
+        CloudPopup(title:game.failureSkipped ? "Puzzle skipped":"Out of hearts",symbol:game.failureSkipped ? "forward.end":"heart.slash",dismiss:nil) {
+            HStack(spacing:10) {ForEach(0..<3,id:\.self) {i in
+                Image(systemName:i<game.coach.remainingHearts ? "heart.fill":"heart").font(.system(size:24,weight:.medium)).foregroundStyle(Color(red:0.80,green:0.35,blue:0.40).opacity(0.75))
+            }}.frame(maxWidth:.infinity).accessibilityHidden(true)
+        } actions: {
+            VStack(spacing:8) {
+                Button {Task{await game.showSolution()}} label:{Label("Show solution",systemImage:"play.rectangle").frame(maxWidth:.infinity)}
+                    .buttonStyle(CloudActionStyle()).disabled(game.busy).accessibilityIdentifier("failure-solution")
+                Button {Task{await game.solveWithArrows()}} label:{Label("Solve with arrows",systemImage:"arrow.up.right").frame(maxWidth:.infinity)}
+                    .buttonStyle(CloudActionStyle()).disabled(game.busy).accessibilityIdentifier("failure-guided")
+                Button {Task{await game.nextAfterFailure()}} label:{Label("Next puzzle",systemImage:"forward.end").frame(maxWidth:.infinity)}
+                    .font(.headline).dynamicTypeSize(...DynamicTypeSize.accessibility2).frame(maxWidth:.infinity,minHeight:48).disabled(game.busy).accessibilityIdentifier("failure-next")
+            }
+        }.accessibilityIdentifier("failure-panel")
+    }
     private func cancelConfirmation() {game.showSkip=false;game.showHint=false}
     private var confirmationPanel:some View {
         let skip=game.showSkip
@@ -342,6 +389,13 @@ struct CloudChessView:View {
                     Task{if skip {await game.newGame()}else {await game.hint()}}
                 } label:{Text(skip ? "Skip puzzle":"Reveal hint").frame(maxWidth:.infinity)}
                     .buttonStyle(CloudActionStyle(destructive:skip)).disabled(game.busy).accessibilityIdentifier("confirm-action")
+                if skip && game.challengeKind == .tactics {
+                    // Skipping can also show how it's solved, at the same cost.
+                    Button {cancelConfirmation();Task{await game.skipToSolution(guided:false)}} label:{Label("Show solution",systemImage:"play.rectangle").frame(maxWidth:.infinity)}
+                        .buttonStyle(CloudActionStyle()).disabled(game.busy).accessibilityIdentifier("skip-solution")
+                    Button {cancelConfirmation();Task{await game.skipToSolution(guided:true)}} label:{Label("Solve with arrows",systemImage:"arrow.up.right").frame(maxWidth:.infinity)}
+                        .buttonStyle(CloudActionStyle()).disabled(game.busy).accessibilityIdentifier("skip-guided")
+                }
                 Button(skip ? "Keep playing":"Keep thinking",action:cancelConfirmation).font(.headline).dynamicTypeSize(...DynamicTypeSize.accessibility2).frame(maxWidth:.infinity,minHeight:48).accessibilityIdentifier("cancel-action")
             }
         }.accessibilityIdentifier("confirmation-panel")
@@ -525,13 +579,13 @@ enum TutorialContent {
             TutorialPage(id:0,image:"tutorial-mate-goal",title:"Mate in \(moves)",
                 text:"Checkmate the king within \(movesText). Your opponent defends after each of your moves."),
             TutorialPage(id:1,image:"tutorial-mate-hearts",title:"Three hearts",
-                text:"A wrong move doesn’t end the puzzle. You lose a heart only when you’ve used \(movesText) without checkmate. Lose all three and the puzzle ends."),
+                text:"A wrong move doesn’t end the puzzle. You lose a heart only when you’ve used \(movesText) without checkmate. Lose all three and you can see the solution."),
             undo]
         case "improvement":return [
             TutorialPage(id:0,image:"tutorial-improve-goal",title:"Improve position in \(moves)",
                 text:"Within \(movesText), come out ahead: win more material than you give up. Your opponent defends after each of your moves."),
             TutorialPage(id:1,image:"tutorial-improve-bar",title:"Finish above the marker",
-                text:"The bar shows the material balance and the marker shows where you started. If you finish at or below it, you lose a heart. Lose all three and the puzzle ends."),
+                text:"The bar shows the material balance and the marker shows where you started. If you finish at or below it, you lose a heart. Lose all three and you can see the solution."),
             undo]
         default:return nil
         }
@@ -540,7 +594,7 @@ enum TutorialContent {
 
 /// A compact modal retains the board context and blocks underlying input.
 struct ChallengeIntermission:View {
-    let returning:Bool,firstIntroduction:Bool
+    let firstIntroduction:Bool
     let title:String,explanation:String
     var tutorial:[TutorialPage]?=nil
     let score:Double
@@ -556,7 +610,7 @@ struct ChallengeIntermission:View {
             ZStack {
                 ink.opacity(0.28).ignoresSafeArea().contentShape(Rectangle())
                 VStack(spacing:0) {
-                    if let tutorial,!returning {
+                    if let tutorial {
                         Text(firstIntroduction ? "The next puzzle is…":"How to play")
                             .font(.system(size:16,weight:.medium,design:.rounded)).foregroundStyle(ink.opacity(0.65)).padding(.top,20)
                             .accessibilityIdentifier(firstIntroduction ? "first-instruction-notice":"instruction-heading")
@@ -592,34 +646,28 @@ struct ChallengeIntermission:View {
                     } else {
                     ScrollView {
                         VStack(spacing:geo.size.height<720 ? 13:18) {
-                            Image(systemName:returning ? "cloud.sun.fill":"cloud.fill")
+                            Image(systemName:"cloud.fill")
                                 .font(.system(size:46,weight:.light)).symbolRenderingMode(.palette)
                                 .foregroundStyle(Color.white,Color(red:0.95,green:0.80,blue:0.48))
                                 .shadow(color:ink.opacity(0.15),radius:12,y:5).accessibilityHidden(true)
-                            Text(returning ? "Welcome back":(firstIntroduction ? "The next puzzle is…":"How to play"))
+                            Text(firstIntroduction ? "The next puzzle is…":"How to play")
                                 .font(.system(size:16,weight:.medium,design:.rounded)).foregroundStyle(ink.opacity(0.65))
-                            if returning {
-                                Text(Int(score).formatted()).font(.system(size:42,weight:.semibold,design:.rounded)).monospacedDigit().minimumScaleFactor(0.65).lineLimit(1).accessibilityIdentifier("return-score")
-                                Text("Continue with your current score?").font(.system(size:20,weight:.medium,design:.rounded))
-                                Text("Your current puzzle is ready to continue.").font(.system(size:16,design:.rounded)).foregroundStyle(ink.opacity(0.65))
-                            } else {
-                                Text(title).font(.title2.weight(.semibold))
-                                if rewardMultiplier>1 {Text("\(rewardMultiplier.formatted())× puzzle points").font(.system(size:15,weight:.semibold,design:.rounded)).padding(.horizontal,16).padding(.vertical,8).background(.white.opacity(0.65),in:Capsule()).accessibilityIdentifier("long-puzzle-reward")}
-                                Text(explanation).font(.body).lineSpacing(4).accessibilityIdentifier("challenge-explanation")
-                                if firstIntroduction {Text("This panel tells you how to play the next puzzle.").font(.system(size:14,design:.rounded)).foregroundStyle(ink.opacity(0.65)).accessibilityIdentifier("first-instruction-notice")}
-                            }
+                            Text(title).font(.title2.weight(.semibold))
+                            if rewardMultiplier>1 {Text("\(rewardMultiplier.formatted())× puzzle points").font(.system(size:15,weight:.semibold,design:.rounded)).padding(.horizontal,16).padding(.vertical,8).background(.white.opacity(0.65),in:Capsule()).accessibilityIdentifier("long-puzzle-reward")}
+                            Text(explanation).font(.body).lineSpacing(4).accessibilityIdentifier("challenge-explanation")
+                            if firstIntroduction {Text("This panel tells you how to play the next puzzle.").font(.system(size:14,design:.rounded)).foregroundStyle(ink.opacity(0.65)).accessibilityIdentifier("first-instruction-notice")}
                         }.multilineTextAlignment(.center).fixedSize(horizontal:false,vertical:true).padding(.horizontal,26).padding(.top,geo.size.height<720 ? 22:28).padding(.bottom,12)
                     }.scrollIndicators(.hidden).scrollBounceBehavior(.basedOnSize).frame(maxHeight:min(410,geo.size.height*0.56))
                     Button(action:proceed) {
-                        HStack(spacing:12) {Text(returning ? "Continue":"Got it!");Image(systemName:"arrow.right")}
+                        HStack(spacing:12) {Text("Got it!");Image(systemName:"arrow.right")}
                             .font(.system(size:17,weight:.semibold,design:.rounded)).frame(maxWidth:.infinity).padding(.vertical,17)
                             .background(ink,in:Capsule()).foregroundStyle(.white)
-                    }.disabled(busy).opacity(busy ? 0.5:1).accessibilityIdentifier(returning ? "continue-session":"acknowledge-instructions").padding(22)
+                    }.disabled(busy).opacity(busy ? 0.5:1).accessibilityIdentifier("acknowledge-instructions").padding(22)
                     }
                 }.frame(width:min(440,geo.size.width-36))
                     .modifier(CloudCardSurface())
                     .scaleEffect(appeared ? 1:0.96).opacity(appeared ? 1:0)
-                    .accessibilityElement(children:.contain).accessibilityIdentifier(returning ? "return-panel":"instruction-panel").accessibilityAddTraits(.isModal)
+                    .accessibilityElement(children:.contain).accessibilityIdentifier("instruction-panel").accessibilityAddTraits(.isModal)
             }.frame(maxWidth:.infinity,maxHeight:.infinity)
         }.foregroundStyle(ink).onAppear {withAnimation(.easeOut(duration:reducedMotion ? 0:0.24)){appeared=true}}
     }

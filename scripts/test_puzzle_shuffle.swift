@@ -44,7 +44,7 @@ import Foundation
     check(c.selectChallengeKind(personalAvailable:true) == .tactics,"Clearing session for skip stays in focused tactics")
     c.total=3;c.reviews=[PuzzleReview(puzzle:a,due:0)]
     check(!c.eligibleReview(c.reviews[0]),"Due review cannot bypass cooldown")
-    for t in 0..<8 {c.total=t;check(c.reviewSlot==(t%4>=2),"Review slots cover both alternating families")}
+    for t in 0..<16 {c.total=t;check(c.reviewSlot==(t%8>=6),"Review slots cover both alternating families, a quarter of the time")}
     c.total=3
     // A failed presentation blocks every reflection beyond the last three until its cooldown ends.
     var failed=AdaptivePuzzleCoach();failed.begin(a);failed.session?.mistakes=3;failed.finish(skipped:true,now:0)

@@ -25,8 +25,8 @@ final class CloudChessUITests:XCTestCase {
             app.launchArguments=["--uitesting","--board=\(shape)","--puzzle-mate=\(mate)","--score=842310","--reduced-motion"]+(night ? ["--night"]:[])
             app.launch();puzzleReady(app,timeout:120)
             XCTAssertEqual(puzzleValues(app)["error"],"0")
-            // Let the brief side announcement finish so the board is unobstructed.
-            let clear=XCTNSPredicateExpectation(predicate:NSPredicate(format:"value CONTAINS %@","sideVisible:0"),object:app.otherElements["puzzle-status"])
+            // Let the brief side pulse finish so the board is still.
+            let clear=XCTNSPredicateExpectation(predicate:NSPredicate(format:"value CONTAINS %@","sidePulsing:0"),object:app.otherElements["puzzle-status"])
             _=XCTWaiter.wait(for:[clear],timeout:10);Thread.sleep(forTimeInterval:1.5)
             if app.descendants(matching:.any)["instruction-panel"].exists {dismissInstructions(app);_=XCTWaiter.wait(for:[clear],timeout:10);Thread.sleep(forTimeInterval:1.5)}
             let shot=XCTAttachment(screenshot:app.screenshot())
@@ -39,7 +39,7 @@ final class CloudChessUITests:XCTestCase {
     func testTutorialArtCaptures() throws {
         continueAfterFailure=false
         func capture(_ app:XCUIApplication,_ name:String) {
-            let clear=XCTNSPredicateExpectation(predicate:NSPredicate(format:"value CONTAINS %@","sideVisible:0"),object:app.otherElements["puzzle-status"])
+            let clear=XCTNSPredicateExpectation(predicate:NSPredicate(format:"value CONTAINS %@","sidePulsing:0"),object:app.otherElements["puzzle-status"])
             _=XCTWaiter.wait(for:[clear],timeout:10);Thread.sleep(forTimeInterval:1.2)
             var centres:[String:[Double]]=[:]
             for element in app.descendants(matching:.any).matching(NSPredicate(format:"identifier BEGINSWITH %@","board-plane-")).allElementsBoundByIndex {
@@ -194,6 +194,28 @@ final class CloudChessUITests:XCTestCase {
         app.buttons["Skip puzzle"].tap();app.buttons["confirm-action"].tap();puzzleReady(app,timeout:90)
         XCTAssertEqual(puzzleValues(app)["adBreak"],"0")
     }
+    /// After a completed ad break that reaches the 2–4 break interval, the Premium
+    /// card offers both plans and their free trials once; "Not now" returns to play.
+    @MainActor func testPremiumPromptAfterAdBreaks() throws {
+        continueAfterFailure=false
+        let app=XCUIApplication();app.launchArguments=["--uitesting","--monetization-testing","--ad-break-due","--fast-ads","--premium-preview","--upsell-every=1","--board=6x6","--reduced-motion"]
+        app.launch()
+        XCTAssertTrue(app.buttons["ad-break-short"].waitForExistence(timeout:45))
+        XCTAssertEqual(puzzleValues(app)["premiumPrompt"],"0","Never before an ad has been watched")
+        app.buttons["ad-break-short"].tap()
+        let close=app.buttons["house-ad-close"];XCTAssertTrue(close.waitForExistence(timeout:10));close.tap()
+        let banner=app.descendants(matching:.any)["subscription-trial-banner"]
+        XCTAssertTrue(banner.waitForExistence(timeout:20),"The prompt follows the completed break")
+        XCTAssertTrue(banner.label.contains("1 month free with yearly") && banner.label.contains("7 days free with monthly"),banner.label)
+        XCTAssertTrue(app.buttons["subscription-plan-annual"].exists && app.buttons["subscription-plan-monthly"].exists)
+        XCTAssertEqual(app.buttons["subscription-buy"].label,"Start free trial")
+        XCTAssertEqual(puzzleValues(app)["premiumPrompt"],"1");XCTAssertEqual(puzzleValues(app)["upsellShown"],"1")
+        let shot=XCTAttachment(screenshot:app.screenshot());shot.name="Premium prompt after ads";shot.lifetime = .keepAlways;add(shot)
+        app.buttons["subscription-not-now"].tap()
+        puzzleReady(app,timeout:90)
+        XCTAssertEqual(puzzleValues(app)["premiumPrompt"],"0");XCTAssertFalse(banner.exists)
+        XCTAssertEqual(puzzleValues(app)["freeRemaining"],"3","The granted batch is unaffected")
+    }
     @MainActor func testAdBreakLongBundleAndBackgroundForfeit() throws {
         continueAfterFailure=false
         let app=XCUIApplication();app.launchArguments=["--uitesting","--monetization-testing","--ad-break-due","--fast-ads","--reduced-motion"]
@@ -203,7 +225,7 @@ final class CloudChessUITests:XCTestCase {
         // Leaving during an ad forfeits that break; it is offered again with the same sizes.
         XCTAssertTrue(app.descendants(matching:.any)["house-ad"].waitForExistence(timeout:10))
         XCUIDevice.shared.press(.home);Thread.sleep(forTimeInterval:1);app.activate()
-        let resume=app.buttons["continue-session"];if resume.waitForExistence(timeout:5) {resume.tap()}
+        XCTAssertFalse(app.buttons["continue-session"].exists,"Returning never shows a continue card")
         XCTAssertTrue(app.buttons["ad-break-long"].waitForExistence(timeout:20))
         XCTAssertEqual(puzzleValues(app)["adOffer"],"4|16");XCTAssertEqual(puzzleValues(app)["freeRemaining"],"0")
         app.buttons["ad-break-long"].tap()
@@ -325,7 +347,6 @@ final class CloudChessUITests:XCTestCase {
     private func puzzleReady(_ app:XCUIApplication,timeout:Double=40) {
         let status=app.otherElements["puzzle-status"]
         XCTAssertTrue(status.waitForExistence(timeout:10))
-        let resume=app.buttons["continue-session"];if resume.exists {resume.tap()}
         let ready=XCTNSPredicateExpectation(predicate:NSPredicate(format:"value CONTAINS %@ AND value CONTAINS %@","ready:1,","evaluating:0,"),object:status)
         let outcome=XCTWaiter.wait(for:[ready],timeout:timeout)
         XCTAssertEqual(outcome,.completed,"Puzzle readiness: \(status.value ?? "missing")")
@@ -427,19 +448,8 @@ final class CloudChessUITests:XCTestCase {
         XCTAssertFalse(app.buttons["Debug menu"].exists);XCTAssertFalse(app.buttons["square-a1"].exists)
         XCTAssertTrue(app.buttons["Toggle sound"].exists);XCTAssertTrue(app.buttons["Close settings"].isHittable)
         let settings=XCTAttachment(screenshot:app.screenshot());settings.name="Store settings";settings.lifetime = .keepAlways;add(settings)
-        app.buttons["Profile analysis"].tap()
-        XCTAssertFalse(app.buttons["Close settings"].exists,"Modal navigation must not stack settings")
-        XCTAssertFalse(app.buttons["analyse-profile"].isEnabled)
-        XCTAssertTrue(app.buttons["profile-provider-chesscom"].exists)
-        app.buttons["profile-provider-lichess"].tap()
-        XCTAssertTrue(app.buttons["profile-provider-lichess"].isSelected)
-        app.textFields["profile-username"].tap();app.textFields["profile-username"].typeText("not/a/username")
-        app.buttons["analyse-profile"].tap()
-        XCTAssertTrue(app.staticTexts["profile-error"].waitForExistence(timeout:10))
-        XCTAssertTrue(app.buttons["Close profile analysis"].isHittable)
-        let profile=XCTAttachment(screenshot:app.screenshot());profile.name="Profile validation";profile.lifetime = .keepAlways;add(profile)
-        app.buttons["Close profile analysis"].tap()
-        XCTAssertTrue(app.buttons["square-a1"].exists)
+        XCTAssertFalse(app.buttons["Profile analysis"].exists,"Profile analysis is removed from the app (2.1)")
+        app.buttons["Close settings"].tap()
         app.buttons["Skip puzzle"].tap()
         XCTAssertTrue(app.descendants(matching:.any)["confirmation-panel"].exists,"Use the authored CloudChess card; its modal accessibility trait may be reported as an Alert")
         XCTAssertFalse(app.buttons["square-a1"].exists)
@@ -447,13 +457,9 @@ final class CloudChessUITests:XCTestCase {
         let warning=XCTAttachment(screenshot:app.screenshot());warning.name="Custom skip confirmation";warning.lifetime = .keepAlways;add(warning)
         app.buttons["cancel-action"].tap()
         XCTAssertEqual(puzzleValues(app)["score"],before["score"]);XCTAssertEqual(puzzleValues(app)["id"],before["id"])
-        openCollection(app);app.buttons["Rare"].tap()
-        XCTAssertTrue(app.buttons["Close collection"].isHittable)
-        let gallery=XCTAttachment(screenshot:app.screenshot());gallery.name="Custom collection tabs";gallery.lifetime = .keepAlways;add(gallery)
-        app.buttons["Close collection"].tap()
         XCTAssertEqual(puzzleValues(app)["moves"],before["moves"])
     }
-    func testKeyPieceHintOncePerMoveAndDiscountOnlyReward() throws {
+    func testKeyPieceHintAlwaysAvailableAndDiscountOnlyReward() throws {
         continueAfterFailure=false
         let app=XCUIApplication();app.launchArguments=["--uitesting","--board=6x6","--puzzle-mate=2","--score=1000000","--reduced-motion"];app.launch();puzzleReady(app)
         let initial=puzzleValues(app),reward=Double(initial["reward"]!)!
@@ -468,10 +474,13 @@ final class CloudChessUITests:XCTestCase {
         var v=puzzleValues(app)
         XCTAssertEqual(v["score"],initial["score"]);XCTAssertEqual(v["moves"],"0");XCTAssertEqual(v["mistakes"],"0")
         XCTAssertEqual(v["hintDiscounts"],"1");XCTAssertEqual(Double(v["reward"]!)!,reward*0.9,accuracy:2)
-        XCTAssertFalse(app.buttons["Hint"].isEnabled,"One hint per move")
         // The key piece pulses for about three seconds, then the board is plain again.
         expectation(for:NSPredicate(format:"value CONTAINS %@","hintPulse:0,"),evaluatedWith:status);waitForExpectations(timeout:6)
-        XCTAssertFalse(app.buttons["Hint"].isEnabled,"Still no second hint at the same position")
+        XCTAssertTrue(app.buttons["Hint"].isEnabled,"The hint stays available")
+        app.buttons["Hint"].tap()
+        expectation(for:NSPredicate(format:"value CONTAINS %@","hintPulse:1,"),evaluatedWith:status);waitForExpectations(timeout:10)
+        XCTAssertFalse(app.staticTexts["Reveal the key piece?"].exists,"Asking again at the same position needs no confirmation")
+        v=puzzleValues(app);XCTAssertEqual(v["hintDiscounts"],"1","…and is free");XCTAssertEqual(Double(v["reward"]!)!,reward*0.9,accuracy:2)
         puzzleMove(app,initial["next"]!);puzzleReady(app)
         XCTAssertTrue(app.buttons["Hint"].isEnabled,"The next move earns a new hint")
         v=puzzleValues(app);XCTAssertEqual(v["hintDiscounts"],"1","Prior discounts survive a correct move")
@@ -818,23 +827,22 @@ final class CloudChessUITests:XCTestCase {
         continueAfterFailure=false
         let app=XCUIApplication();app.launchArguments=["--uitesting","--board=6x6","--puzzle-mate=1","--reduced-motion","--score=100000"];app.launch();puzzleReady(app)
         let old=puzzleValues(app)
-        XCUIDevice.shared.press(.home);Thread.sleep(forTimeInterval:3);app.activate()
-        XCTAssertTrue(app.buttons["continue-session"].waitForExistence(timeout:10))
-        let score=puzzleValues(app)["score"]
+        let away=puzzleValues(app)["score"]
+        XCUIDevice.shared.press(.home);Thread.sleep(forTimeInterval:3);app.activate();puzzleReady(app)
+        XCTAssertFalse(app.buttons["continue-session"].exists,"Returning resumes the board directly")
+        XCTAssertFalse(app.descendants(matching:.any)["return-panel"].exists)
+        let score=puzzleValues(app)["score"];XCTAssertEqual(score,away)
         Thread.sleep(forTimeInterval:3);XCTAssertEqual(puzzleValues(app)["score"],score)
-        XCTAssertEqual(puzzleValues(app)["revealed"],"0")
-        let shot=XCTAttachment(screenshot:app.screenshot());shot.name="Return with frozen score";shot.lifetime = .keepAlways;add(shot)
-        app.buttons["continue-session"].tap();puzzleReady(app)
+        XCTAssertEqual(puzzleValues(app)["revealed"],"1")
+        let shot=XCTAttachment(screenshot:app.screenshot());shot.name="Return resumes the board";shot.lifetime = .keepAlways;add(shot)
         let next=puzzleValues(app)
         XCTAssertEqual(next["id"],old["id"]);XCTAssertEqual(next["instructionType"],old["instructionType"])
         XCTAssertFalse(app.descendants(matching:.any)["instruction-panel"].exists)
         XCTAssertEqual(next["score"],score)
         XCTAssertEqual(next["completed"],"0")
-        app.terminate();app.launchArguments=["--uitesting","--preserve-coach","--reduced-motion"];app.launch()
-        XCTAssertTrue(app.buttons["continue-session"].waitForExistence(timeout:10))
-        let restored=puzzleValues(app)["score"]
-        Thread.sleep(forTimeInterval:2);XCTAssertEqual(puzzleValues(app)["score"],restored)
-        app.buttons["continue-session"].tap();puzzleReady(app)
+        app.terminate();app.launchArguments=["--uitesting","--preserve-coach","--reduced-motion"];app.launch();puzzleReady(app)
+        XCTAssertFalse(app.buttons["continue-session"].exists,"A relaunch resumes the board directly")
+        let restored=puzzleValues(app)["score"];XCTAssertEqual(restored,score)
         XCTAssertEqual(puzzleValues(app)["id"],next["id"])
         XCTAssertEqual(puzzleValues(app)["error"],"0")
     }
@@ -861,10 +869,11 @@ final class CloudChessUITests:XCTestCase {
         XCTAssertEqual(puzzleValues(app)["hearts"],"2","Attempts belong to this puzzle; undo does not refill")
         puzzleMove(app,puzzleValues(app)["next"]!);puzzleReady(app)
         finalMistake();XCTAssertEqual(puzzleValues(app)["hearts"],"1")
-        // The failed position stays visible before the cloud journey (1.2 s under reduced motion).
+        // The failed position stays visible before the failure card (1.2 s under reduced motion).
         let hold=failureHold(app) {let v=puzzleValues(app),winning=Set(v["winning"]!.split(separator:"|"));puzzleMove(app,String(v["legal"]!.split(separator:"|").first{!winning.contains($0) && $0.count==4}!))}
-        XCTAssertGreaterThanOrEqual(hold,1.0,"Third lost heart rests on the failed position before the journey")
-        puzzleReady(app);let after=puzzleValues(app)
+        XCTAssertGreaterThanOrEqual(hold,1.0,"Third lost heart rests on the failed position before the card")
+        XCTAssertTrue(app.buttons["failure-next"].waitForExistence(timeout:5))
+        app.buttons["failure-next"].tap();puzzleReady(app);let after=puzzleValues(app)
         XCTAssertNotEqual(after["id"],original["id"]);XCTAssertEqual(after["hearts"],"3")
         XCTAssertEqual(after["retired"],"1","The failed puzzle is retired, never repeated")
         XCTAssertEqual(Double(after["score"]!)!,max(0,1_000_000-value*2.5),accuracy:2)
@@ -894,10 +903,12 @@ final class CloudChessUITests:XCTestCase {
         XCTAssertEqual(v["moves"],"2","A wrong move is answered, not rejected")
         XCTAssertEqual(v["hearts"],"3");XCTAssertEqual(v["mistakeFeedback"],"0");XCTAssertEqual(v["offTrack"],"0")
         XCTAssertEqual(v["score"],start["score"]);XCTAssertEqual(app.otherElements["moves-used"].value as? String,"1 of 2")
-        app.buttons["Hint"].tap();XCTAssertTrue(app.staticTexts["Reveal the misstep?"].waitForExistence(timeout:5))
-        app.buttons["confirm-action"].tap();puzzleReady(app)
+        app.buttons["Hint"].tap();XCTAssertTrue(app.staticTexts["No winning moves in this position!"].waitForExistence(timeout:5))
+        XCTAssertTrue(app.staticTexts["Maybe undo a few moves..."].exists)
+        let card=XCTAttachment(screenshot:app.screenshot());card.name="No winning moves";card.lifetime = .keepAlways;add(card)
+        app.buttons["no-win-close"].tap();puzzleReady(app)
         v=puzzleValues(app)
-        XCTAssertEqual(v["hintStage"],"1");XCTAssertEqual(v["hintPulse"],"1","The misstepping piece pulses");XCTAssertFalse(app.buttons["Hint"].isEnabled)
+        XCTAssertEqual(v["hintStage"],"0","The no-win notice is free");XCTAssertEqual(v["hints"],"0");XCTAssertEqual(v["score"],start["score"]);XCTAssertEqual(v["noWin"],"0")
         let final=String(v["legal"]!.split(separator:"|").first{$0.count==4}!)
         puzzleMove(app,final);puzzleReady(app)
         v=puzzleValues(app)
@@ -906,10 +917,15 @@ final class CloudChessUITests:XCTestCase {
         XCTAssertEqual(tip.label,"Hint: you may want to undo some previous moves!")
         let toast=XCTAttachment(screenshot:app.screenshot());toast.name="Undo tip";toast.lifetime = .keepAlways;add(toast)
         XCTAssertEqual(puzzleValues(app)["undoTipEvents"],"1");XCTAssertEqual(puzzleValues(app)["undoTipsShown"],"1")
-        app.buttons["Undo move"].tap();puzzleReady(app)
+        app.buttons["undo-tip"].tap()
+        // The no-win card offers the undo itself.
+        app.buttons["Hint"].tap();XCTAssertTrue(app.buttons["no-win-undo"].waitForExistence(timeout:5))
+        app.buttons["no-win-undo"].tap();puzzleReady(app)
         v=puzzleValues(app)
         XCTAssertEqual(v["moves"],"0");XCTAssertEqual(v["offTrack"],"-1");XCTAssertEqual(v["undos"],"1");XCTAssertEqual(v["hearts"],"2")
         XCTAssertFalse(app.buttons["undo-tip"].exists,"Undo dismisses the tip")
+        app.buttons["Hint"].tap();XCTAssertTrue(app.staticTexts["Reveal the key piece?"].waitForExistence(timeout:5),"On the winning line the ordinary hint returns")
+        app.buttons["cancel-action"].tap();puzzleReady(app)
         puzzleMove(app,v["next"]!);puzzleReady(app);puzzleMove(app,puzzleValues(app)["next"]!)
         expectation(for:NSPredicate(format:"value CONTAINS %@","completed:1,"),evaluatedWith:app.otherElements["puzzle-status"]);waitForExpectations(timeout:40)
     }
@@ -932,7 +948,7 @@ final class CloudChessUITests:XCTestCase {
         puzzleMove(app,"c2b4");puzzleReady(app);puzzleMove(app,"b4a6")
         expectation(for:NSPredicate(format:"value CONTAINS %@","completed:1,"),evaluatedWith:app.otherElements["puzzle-status"]);waitForExpectations(timeout:40)
     }
-    /// Seconds between the first `phase:failed,` observation and the start of the cloud journey.
+    /// Seconds between the first `phase:failed,` observation and the failure card.
     private func failureHold(_ app:XCUIApplication,after action:()->Void)->Double {
         let status=app.otherElements["puzzle-status"]
         action()
@@ -940,9 +956,9 @@ final class CloudChessUITests:XCTestCase {
         while Date()<deadline {
             let value=status.value as? String ?? ""
             if failedAt==nil,value.contains("phase:failed,") {failedAt=Date()}
-            if let failedAt,value.contains("journey:1,") || value.contains("phase:journey,") || value.contains("ready:1,") {return Date().timeIntervalSince(failedAt)}
+            if let failedAt,value.contains("failureCard:1,") {return Date().timeIntervalSince(failedAt)}
         }
-        XCTFail("Third mistake never reached the failed phase and journey: \(status.value ?? "missing")");return 0
+        XCTFail("Third mistake never reached the failed phase and its card: \(status.value ?? "missing")");return 0
     }
     func testFailureHoldWithMotion() throws {
         continueAfterFailure=false
@@ -953,9 +969,121 @@ final class CloudChessUITests:XCTestCase {
         XCTAssertEqual(puzzleValues(app)["hearts"],"1")
         let hold=failureHold(app) {puzzleMove(app,bad())}
         XCTAssertGreaterThanOrEqual(hold,1.5,"Third mistake rests 1.8 s with motion on")
-        puzzleReady(app);let after=puzzleValues(app)
+        app.buttons["failure-next"].tap();puzzleReady(app);let after=puzzleValues(app)
         XCTAssertEqual(after["hearts"],"3");XCTAssertEqual(after["retired"],"1")
         XCTAssertGreaterThanOrEqual(Int(after["lastJourneyMs"]!)!,800);XCTAssertLessThan(Int(after["lastJourneyMs"]!)!,2200)
+    }
+    /// Out of hearts: the card offers a manual solution replay, a guided solve with arrows, or the next puzzle.
+    func testFailureCardSolutionGuidedSolveAndNext() throws {
+        continueAfterFailure=false
+        let app=XCUIApplication();app.launchArguments=["--uitesting","--board=6x6","--puzzle-mate=2","--reduced-motion","--score=1000000"];app.launch();puzzleReady(app)
+        let status=app.otherElements["puzzle-status"],original=puzzleValues(app)
+        func finalMistake() {
+            let v=puzzleValues(app),winning=Set(v["winning"]!.split(separator:"|"))
+            puzzleMove(app,String(v["legal"]!.split(separator:"|").first{!winning.contains($0) && $0.count==4}!))
+        }
+        func wait(_ format:String,_ args:[Any],_ timeout:Double=20) {
+            let e=XCTNSPredicateExpectation(predicate:NSPredicate(format:format,argumentArray:args),object:status)
+            XCTAssertEqual(XCTWaiter.wait(for:[e],timeout:timeout),.completed,"\(format) \(args): \(status.value ?? "missing")")
+        }
+        puzzleMove(app,original["next"]!);puzzleReady(app)
+        finalMistake();puzzleReady(app);finalMistake();puzzleReady(app);finalMistake()
+        let card=app.descendants(matching:.any)["failure-panel"]
+        XCTAssertTrue(card.waitForExistence(timeout:10),"Losing every heart offers the choices")
+        XCTAssertTrue(app.staticTexts["Out of hearts"].exists)
+        for id in ["failure-solution","failure-guided","failure-next"] {XCTAssertTrue(app.buttons[id].isHittable,id)}
+        XCTAssertFalse(app.buttons["square-a1"].exists,"The card blocks the board")
+        let failed=puzzleValues(app);XCTAssertEqual(failed["retired"],"1");XCTAssertEqual(failed["phase"],"failed")
+        let shot=XCTAttachment(screenshot:app.screenshot());shot.name="Out of hearts";shot.lifetime = .keepAlways;add(shot)
+        // a) The whole solution, stepped by hand.
+        app.buttons["failure-solution"].tap()
+        XCTAssertTrue(app.buttons["replay-next"].waitForExistence(timeout:10))
+        XCTAssertFalse(app.buttons["replay-play"].exists,"The solution steps only by hand")
+        var v=puzzleValues(app);XCTAssertEqual(v["replay"],"1");XCTAssertEqual(v["replayIndex"],"0");XCTAssertEqual(v["replayCount"],"4","Start plus the three solution plies")
+        app.buttons["replay-next"].tap();app.buttons["replay-next"].tap();XCTAssertEqual(puzzleValues(app)["replayIndex"],"2")
+        app.buttons["replay-back"].tap();XCTAssertEqual(puzzleValues(app)["replayIndex"],"1")
+        app.buttons["replay-next"].tap();app.buttons["replay-next"].tap();XCTAssertEqual(puzzleValues(app)["replayIndex"],"3")
+        XCTAssertFalse(app.buttons["replay-next"].isEnabled)
+        let replay=XCTAttachment(screenshot:app.screenshot());replay.name="Solution replay";replay.lifetime = .keepAlways;add(replay)
+        app.buttons["close-replay"].tap()
+        XCTAssertTrue(card.waitForExistence(timeout:5),"Closing the replay returns to the choices");XCTAssertEqual(puzzleValues(app)["replay"],"0")
+        // b) Back to the start; the arrowed moves solve it; the defense follows the solution.
+        app.buttons["failure-guided"].tap()
+        wait("value CONTAINS %@ AND value CONTAINS %@",["guided:1,","ready:1,"])
+        v=puzzleValues(app);XCTAssertEqual(v["moves"],"0");XCTAssertEqual(v["arrow"]!.count,4,"An arrow shows the first move")
+        XCTAssertFalse(app.buttons["Undo move"].isEnabled);XCTAssertFalse(app.buttons["Hint"].isEnabled)
+        let arrows=XCTAttachment(screenshot:app.screenshot());arrows.name="Guided solve arrow";arrows.lifetime = .keepAlways;add(arrows)
+        if let other=v["legal"]!.split(separator:"|").first(where:{!$0.hasPrefix(v["arrow"]!.prefix(2)) && $0.count==4}) {
+            puzzleMove(app,String(other));Thread.sleep(forTimeInterval:0.6);XCTAssertEqual(puzzleValues(app)["moves"],"0","Only the arrowed piece moves")
+        }
+        let score=v["score"]!
+        puzzleMove(app,v["arrow"]!)
+        wait("value CONTAINS %@ AND value CONTAINS %@ AND value CONTAINS %@",["moves:2,","guided:1,","ready:1,"])
+        v=puzzleValues(app);XCTAssertEqual(v["arrow"]!.count,4,"The next arrow follows the defense")
+        puzzleMove(app,v["arrow"]!)
+        wait("value CONTAINS %@ AND NOT value CONTAINS %@",["ready:1,","id:\(original["id"]!),"],40)
+        let next=puzzleValues(app)
+        XCTAssertEqual(next["guided"],"0");XCTAssertEqual(next["arrow"],"");XCTAssertEqual(next["hearts"],"3")
+        XCTAssertEqual(next["score"],score,"A guided solve earns nothing");XCTAssertEqual(next["completed"],failed["completed"],"…and records nothing new")
+    }
+    /// Premium shows when the active plan renews (or ends). StoreKit is replaced by a DEBUG fixture.
+    @MainActor func testPremiumShowsRenewalDate() throws {
+        continueAfterFailure=false
+        for (fixture,expected) in [("yearly-renews","Your yearly plan renews on "),("monthly-ends","Your monthly plan ends on "),("yearly-trial","Your free trial ends on ")] {
+            let app=XCUIApplication();app.launchArguments=["--uitesting","--reduced-motion","--premium-renewal=\(fixture)"];app.launch();puzzleReady(app)
+            app.buttons["Settings"].tap();XCTAssertTrue(app.buttons["Premium"].waitForExistence(timeout:5));app.buttons["Premium"].tap()
+            let text=app.staticTexts["subscription-renewal"];XCTAssertTrue(text.waitForExistence(timeout:15))
+            XCTAssertTrue(text.label.hasPrefix(expected),text.label)
+            XCTAssertTrue(app.descendants(matching:.any)["subscription-active"].exists)
+            let shot=XCTAttachment(screenshot:app.screenshot());shot.name="Premium \(fixture)";shot.lifetime = .keepAlways;add(shot)
+            app.terminate()
+        }
+    }
+    /// The board (and the crowns standing on it) fits between the measured header
+    /// and the bottom controls on every shape, for both puzzle titles.
+    func testHUDNeverOverlapsBoard() throws {
+        continueAfterFailure=false
+        for (shape,mate) in [("4x8",2),("4x8",0),("8x8",0),("8x4",2),("6x6",0),("5x7",3),("7x5",0)] {
+            let app=XCUIApplication();app.launchArguments=["--uitesting","--board=\(shape)","--puzzle-mate=\(mate)","--reduced-motion","--score=1000000","--cloud-validation"];app.launch();puzzleReady(app)
+            let squares=app.descendants(matching:.any).matching(NSPredicate(format:"identifier BEGINSWITH %@","board-plane-")).allElementsBoundByIndex.map(\.frame)
+            XCTAssertFalse(squares.isEmpty)
+            let boardTop=squares.map(\.minY).min()!,boardBottom=squares.map(\.maxY).max()!
+            let pips=app.otherElements["moves-used"].frame
+            // The crowns rise above the top row; one square of headroom is a conservative stand-in.
+            let squareHeight=squares.map(\.height).max()!
+            XCTAssertGreaterThan(boardTop-squareHeight*0.9,pips.maxY+8,"\(shape) mate \(mate): the title cloud clears the crowns")
+            let dock=app.buttons["Undo move"].frame
+            XCTAssertLessThan(boardBottom,dock.minY-8,"\(shape) mate \(mate): the board clears the dock")
+            if mate==0 {XCTAssertLessThan(boardBottom,app.otherElements["material-bar"].frame.minY,"\(shape): the board clears the material bar")}
+            let shot=XCTAttachment(screenshot:app.screenshot());shot.name="HUD \(shape) mate \(mate)";shot.lifetime = .keepAlways;add(shot)
+            app.terminate()
+        }
+    }
+    /// The skip confirmation also offers the solution (replay or arrows) at the skip's cost.
+    func testSkipOffersSolutionChoices() throws {
+        continueAfterFailure=false
+        let app=XCUIApplication();app.launchArguments=["--uitesting","--board=6x6","--puzzle-mate=2","--reduced-motion","--score=1000000"];app.launch();puzzleReady(app)
+        let start=puzzleValues(app),value=pow(Double(start["itemRating"]!)!,1.5)
+        app.buttons["Skip puzzle"].tap();XCTAssertTrue(app.staticTexts["Skip this puzzle?"].waitForExistence(timeout:5))
+        for id in ["confirm-action","skip-solution","skip-guided","cancel-action"] {XCTAssertTrue(app.buttons[id].isHittable,id)}
+        let shot=XCTAttachment(screenshot:app.screenshot());shot.name="Skip with solution choices";shot.lifetime = .keepAlways;add(shot)
+        app.buttons["skip-guided"].tap()
+        let status=app.otherElements["puzzle-status"]
+        expectation(for:NSPredicate(format:"value CONTAINS %@ AND value CONTAINS %@","guided:1,","ready:1,"),evaluatedWith:status);waitForExpectations(timeout:20)
+        var v=puzzleValues(app)
+        XCTAssertEqual(Double(v["score"]!)!,1_000_000-value*0.5,accuracy:2,"Same cost as a skip");XCTAssertEqual(v["retired"],"1")
+        XCTAssertEqual(v["arrow"]!.count,4)
+        puzzleMove(app,v["arrow"]!)
+        expectation(for:NSPredicate(format:"value CONTAINS %@ AND value CONTAINS %@","moves:2,","ready:1,"),evaluatedWith:status);waitForExpectations(timeout:20)
+        v=puzzleValues(app);let score=v["score"]!
+        puzzleMove(app,v["arrow"]!)
+        expectation(for:NSPredicate(format:"value CONTAINS %@ AND NOT value CONTAINS %@","ready:1,","id:\(start["id"]!),"),evaluatedWith:status);waitForExpectations(timeout:40)
+        puzzleReady(app);XCTAssertEqual(puzzleValues(app)["score"],score,"Never charged twice")
+        // On the next puzzle, the replay path returns to a "Puzzle skipped" card.
+        app.buttons["Skip puzzle"].tap();app.buttons["skip-solution"].tap()
+        XCTAssertTrue(app.buttons["close-replay"].waitForExistence(timeout:10));app.buttons["close-replay"].tap()
+        XCTAssertTrue(app.staticTexts["Puzzle skipped"].waitForExistence(timeout:5))
+        app.buttons["failure-next"].tap();puzzleReady(app);XCTAssertEqual(puzzleValues(app)["retired"],"2")
     }
     func testKingDominoGeneration() throws {
         continueAfterFailure=false
@@ -1577,6 +1705,7 @@ final class CloudChessUITests:XCTestCase {
     }
 
     func testOnDeviceProfileAndOfflineStandardPlay() throws {
+        throw XCTSkip("Profile analysis is switched off in 2.1 (ProfileAnalysisFeature.enabled)")
         continueAfterFailure=false
         let app=XCUIApplication();app.launchArguments=["--uitesting","--board=8x8","--puzzle-mate=1","--profile-autostart=https://lichess.org/@/thibault","--profile-limit=1"];app.launch();puzzleReady(app)
         app.buttons["Settings"].tap();app.buttons["Profile analysis"].tap()
@@ -1633,9 +1762,9 @@ final class CloudChessUITests:XCTestCase {
         for i in stride(from:0,to:crop.width*crop.height*4,by:4) {total+=0.2126*Double(bytes[i])+0.7152*Double(bytes[i+1])+0.0722*Double(bytes[i+2])}
         return total/Double(crop.width*crop.height)
     }
-    private func expectSideText(_ app:XCUIApplication,_ count:String,_ message:String="") {
-        let shown=XCTNSPredicateExpectation(predicate:NSPredicate(format:"value CONTAINS %@","sideText:\(count),"),object:app.otherElements["puzzle-status"])
-        XCTAssertEqual(XCTWaiter.wait(for:[shown],timeout:5),.completed,"\(message) sideText expected \(count): \(puzzleValues(app)["sideText"] ?? "missing")")
+    private func expectSidePulse(_ app:XCUIApplication,_ count:String,_ message:String="") {
+        let shown=XCTNSPredicateExpectation(predicate:NSPredicate(format:"value CONTAINS %@","sidePulse:\(count),"),object:app.otherElements["puzzle-status"])
+        XCTAssertEqual(XCTWaiter.wait(for:[shown],timeout:5),.completed,"\(message) sidePulse expected \(count): \(puzzleValues(app)["sidePulse"] ?? "missing")")
     }
     func testNightModeToggleDarkensSkyKeepsBoardAndPersists() throws {
         continueAfterFailure=false
@@ -1666,47 +1795,38 @@ final class CloudChessUITests:XCTestCase {
         app.buttons["night-toggle"].tap()
         XCTAssertEqual(puzzleValues(app)["night"],"0");XCTAssertEqual(app.buttons["night-toggle"].value as? String,"Off")
     }
-    func testSideAnnouncementOnEveryReveal() throws {
+    /// The solver's pieces pulse briefly at every reveal; no side text is drawn.
+    func testSidePulseOnEveryReveal() throws {
         continueAfterFailure=false
         let app=XCUIApplication();app.launchArguments=["--uitesting","--board=6x6","--puzzle-mate=1"];app.launch();puzzleReady(app)
         let status=app.otherElements["puzzle-status"]
-        expectSideText(app,"1","One announcement per reveal")
-        XCTAssertEqual(puzzleValues(app)["sideVisible"],"1")
-        Thread.sleep(forTimeInterval:0.3)
-        let shot=XCTAttachment(screenshot:app.screenshot());shot.name="Playing as side text";shot.lifetime = .keepAlways;add(shot)
-        XCTAssertEqual(puzzleValues(app)["hintMarks"],"0");XCTAssertEqual(puzzleValues(app)["boardMatches"],"1")
+        expectSidePulse(app,"1","One pulse per reveal")
+        let shot=XCTAttachment(screenshot:app.screenshot());shot.name="Side pulse";shot.lifetime = .keepAlways;add(shot)
+        XCTAssertEqual(puzzleValues(app)["boardMatches"],"1")
         XCTAssertFalse(app.staticTexts["Playing as White"].exists);XCTAssertFalse(app.staticTexts["Playing as Black"].exists)
-        let gone=XCTNSPredicateExpectation(predicate:NSPredicate(format:"value CONTAINS %@","sideVisible:0,"),object:status)
-        XCTAssertEqual(XCTWaiter.wait(for:[gone],timeout:6),.completed,"Text evaporates and clears itself")
+        let gone=XCTNSPredicateExpectation(predicate:NSPredicate(format:"value CONTAINS %@","sidePulsing:0,"),object:status)
+        XCTAssertEqual(XCTWaiter.wait(for:[gone],timeout:4),.completed,"The pulse is brief and clears itself")
+        XCTAssertEqual(puzzleValues(app)["hintMarks"],"0")
         let first=puzzleValues(app)["id"]!
         puzzleMove(app,puzzleValues(app)["next"]!)
         let changed=XCTNSPredicateExpectation(predicate:NSPredicate(format:"value CONTAINS %@ AND NOT value CONTAINS %@","ready:1,","id:\(first),"),object:status)
         XCTAssertEqual(XCTWaiter.wait(for:[changed],timeout:40),.completed)
         puzzleReady(app)
-        expectSideText(app,"2","Journey reveal announces again")
-        XCUIDevice.shared.press(.home);Thread.sleep(forTimeInterval:2);app.activate()
-        XCTAssertTrue(app.buttons["continue-session"].waitForExistence(timeout:10))
-        app.buttons["continue-session"].tap();puzzleReady(app)
-        expectSideText(app,"3","Resume reveal announces again")
+        expectSidePulse(app,"2","Journey reveal pulses again")
         app.buttons["Skip puzzle"].tap();app.buttons["confirm-action"].tap();puzzleReady(app)
-        expectSideText(app,"4","Skip handoff announces again")
+        expectSidePulse(app,"3","Skip handoff pulses again")
+        let settled=XCTNSPredicateExpectation(predicate:NSPredicate(format:"value CONTAINS %@","sidePulsing:0,"),object:status)
+        XCTAssertEqual(XCTWaiter.wait(for:[settled],timeout:4),.completed)
         XCTAssertEqual(puzzleValues(app)["hintMarks"],"0");XCTAssertEqual(puzzleValues(app)["boardMatches"],"1")
     }
-    func testSideAnnouncementReducedMotionFadesWithoutCloud() throws {
+    func testSidePulseReducedMotionIsStill() throws {
         continueAfterFailure=false
         let app=XCUIApplication();app.launchArguments=["--uitesting","--board=6x6","--puzzle-mate=1","--reduced-motion"];app.launch();puzzleReady(app)
         let status=app.otherElements["puzzle-status"]
-        expectSideText(app,"1")
-        XCTAssertTrue((app.otherElements["piece-effects"].value as? String ?? "").contains("particles:0,"),"Reduce Motion shows no evaporation cloud")
-        let gone=XCTNSPredicateExpectation(predicate:NSPredicate(format:"value CONTAINS %@","sideVisible:0,"),object:status)
-        XCTAssertEqual(XCTWaiter.wait(for:[gone],timeout:2.5),.completed,"Reduced variant fades out within two seconds")
-        let first=puzzleValues(app)["id"]!
-        puzzleMove(app,puzzleValues(app)["next"]!)
-        let changed=XCTNSPredicateExpectation(predicate:NSPredicate(format:"value CONTAINS %@ AND NOT value CONTAINS %@","ready:1,","id:\(first),"),object:status)
-        XCTAssertEqual(XCTWaiter.wait(for:[changed],timeout:40),.completed)
-        puzzleReady(app)
-        expectSideText(app,"2")
-        XCTAssertTrue((app.otherElements["piece-effects"].value as? String ?? "").contains("particles:0,"))
+        expectSidePulse(app,"1")
+        XCTAssertTrue((app.otherElements["piece-effects"].value as? String ?? "").contains("particles:0,"),"Reduce Motion adds no particles")
+        let gone=XCTNSPredicateExpectation(predicate:NSPredicate(format:"value CONTAINS %@","sidePulsing:0,"),object:status)
+        XCTAssertEqual(XCTWaiter.wait(for:[gone],timeout:3),.completed,"Reduced variant clears within two seconds")
     }
     func testCloudFieldActuallyMovesAndPauses() throws {
         continueAfterFailure=false
@@ -1758,8 +1878,8 @@ final class CloudChessUITests:XCTestCase {
             // moving an edge. A one-pixel shift across a tile exceeds this by >100.
             XCTAssertLessThanOrEqual(maximum,1,"Stationary board pixels changed beyond HDR rounding")
         }
-        // The side announcement rises and evaporates over the centre tiles at reveal; sample the board once it has cleared.
-        let announced=XCTNSPredicateExpectation(predicate:NSPredicate(format:"value CONTAINS %@","sideVisible:0,"),object:app.otherElements["puzzle-status"])
+        // The side pulse scales the solver's pieces at reveal; sample the board once it has settled.
+        let announced=XCTNSPredicateExpectation(predicate:NSPredicate(format:"value CONTAINS %@","sidePulsing:0,"),object:app.otherElements["puzzle-status"])
         XCTAssertEqual(XCTWaiter.wait(for:[announced],timeout:8),.completed)
         let frame=app.otherElements["board-plane-d4"].frame
         let original=boardPixels();Thread.sleep(forTimeInterval:2)

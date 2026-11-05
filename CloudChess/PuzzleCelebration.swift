@@ -48,7 +48,7 @@ final class PuzzleCelebration {
 
 extension CloudScene {
     func puzzleExit(duration requested:TimeInterval?=nil) {
-        onCancelDrag?();marks.childNodes.forEach{$0.removeFromParentNode()};sideAnnouncement.clear()
+        onCancelDrag?();marks.childNodes.forEach{$0.removeFromParentNode()};cancelSidePulse()
         island.removeAction(forKey:"mistake-shake");island.position=SCNVector3Zero
         island.childNode(withName:"mistake-feedback",recursively:false)?.removeFromParentNode()
         island.removeAction(forKey:"puzzle-transition")

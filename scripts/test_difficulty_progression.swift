@@ -186,7 +186,7 @@ import Foundation
         check(reviewShare<=0.08,"Struggle run: presented reviews \(presentedReviews.count)/\(struggle.count) must be at most 8% of picks")
         check(struggleMeans.high>=1750,"Struggle run: high bucket mean rating \(struggleMeans.high) must be at least 1750")
         for r in presentedReviews {check(r.reviewEligible,"Struggle run attempt \(r.attempt): presented review \(r.id) must pass eligibleReview")}
-        for r in presentedReviews {check(r.probability>=0.25 && r.probability<=0.95,"Struggle run attempt \(r.attempt): review predicted success \(r.probability) must lie in 0.25…0.95")}
+        for r in presentedReviews {check(r.probability>=0.30 && r.probability<=0.85,"Struggle run attempt \(r.attempt): review predicted success \(r.probability) must lie in 0.30…0.85")}
         let struggleAttempts=attemptsToGoal[struggleStart]
 
         // Summary ---------------------------------------------------------------
