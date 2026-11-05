@@ -321,6 +321,41 @@ final class CloudScene: ObservableObject {
         boostRendering(for:duration)
     }
     var matePresentationDuration:TimeInterval {reducedMotion ? 0.18:moveAnimationDuration+PieceCloudEffects.mateDuration}
+    /// The hint: the key piece pulses (gently scaling, with a glowing ring) for
+    /// `duration`. Reduce Motion keeps only a steady ring for the same time.
+    func pulsePiece(at square:String,duration:TimeInterval) {
+        guard let node=nodes[square] else{return}
+        let material=SCNMaterial();material.lightingModel = .constant
+        material.diffuse.contents=UIColor(red:1.0,green:0.80,blue:0.30,alpha:0.85)
+        let ring=SCNNode(geometry:SCNTube(innerRadius:0.36,outerRadius:0.46,height:0.012));ring.geometry?.materials=[material]
+        let p=position(square);ring.position=SCNVector3(p.x,0.115,p.z);ring.categoryBitMask=2;ring.castsShadow=false;ring.name="hint-pulse"
+        marks.addChildNode(ring)
+        let beats=max(1,Int(duration.rounded()))
+        // SceneKit only advances actions while it renders, so the end of the
+        // hint is timed on the main queue (the static Reduce Motion ring has
+        // nothing animating to keep the view drawing).
+        DispatchQueue.main.asyncAfter(deadline:.now()+duration+0.25) { [weak self, weak ring,weak node] in
+            ring?.removeFromParentNode()
+            if let node,node.action(forKey:"hint-pulse") != nil {node.removeAction(forKey:"hint-pulse");node.scale=SCNVector3(1,1,1)}
+            self?.boostRendering(for:0.1)
+        }
+        if !reducedMotion {
+            boostRendering(for:duration+0.3)
+            let beat=SCNAction.sequence([.scale(to:1.16,duration:0.35),.scale(to:1,duration:0.65)]);beat.timingMode = .easeInEaseOut
+            node.runAction(.repeat(beat,count:beats),forKey:"hint-pulse")
+            let glow=SCNAction.sequence([.group([.scale(to:1.25,duration:0.35),.fadeOpacity(to:1,duration:0.35)]),.group([.scale(to:1,duration:0.65),.fadeOpacity(to:0.45,duration:0.65)])])
+            ring.runAction(.sequence([.repeat(glow,count:beats),.fadeOut(duration:0.2),.removeFromParentNode()]))
+        }
+        let names:[Character:String]=["p":"pawn","n":"knight","b":"bishop","r":"rook","q":"queen","k":"king"]
+        let piece=symbols[square].flatMap{names[Character($0.lowercased())]} ?? "piece"
+        UIAccessibility.post(notification:.announcement,argument:"Key piece: \(piece) on \(square)")
+    }
+    var pulsingPiece:Bool {marks.childNode(withName:"hint-pulse",recursively:false) != nil}
+    /// Picking up or selecting a piece ends the hint pulse at once.
+    func cancelHintPulse() {
+        for node in nodes.values where node.action(forKey:"hint-pulse") != nil {node.removeAction(forKey:"hint-pulse");node.scale=SCNVector3(1,1,1)}
+        marks.childNode(withName:"hint-pulse",recursively:false)?.removeFromParentNode()
+    }
     func hintRegion(around square:String) {
         mark(selected:nil,legal:[],last:nil)
         guard let file=square.first?.asciiValue,let rank=Int(square.suffix(1)) else{return}

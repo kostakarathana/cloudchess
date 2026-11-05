@@ -17,29 +17,115 @@ final class CloudChessUITests:XCTestCase {
             app.terminate()
         }
     }
+    /// Marketing captures: real rendered gameplay with a seeded score; captions are added outside the app.
+    func testMarketingScreenshotSet() throws {
+        continueAfterFailure=false
+        for (name,shape,mate,night) in [("m1-hero-8x8","8x8",2,false),("m2-winning-6x6","6x6",0,false),("m3-small-5x5","5x5",1,false),("m4-rect-4x6","4x6",2,false),("m5-night-7x7","7x7",2,true),("m6-wide-8x5","8x5",0,false)] {
+            let app=XCUIApplication()
+            app.launchArguments=["--uitesting","--board=\(shape)","--puzzle-mate=\(mate)","--score=842310","--reduced-motion"]+(night ? ["--night"]:[])
+            app.launch();puzzleReady(app,timeout:120)
+            XCTAssertEqual(puzzleValues(app)["error"],"0")
+            // Let the brief side announcement finish so the board is unobstructed.
+            let clear=XCTNSPredicateExpectation(predicate:NSPredicate(format:"value CONTAINS %@","sideVisible:0"),object:app.otherElements["puzzle-status"])
+            _=XCTWaiter.wait(for:[clear],timeout:10);Thread.sleep(forTimeInterval:1.5)
+            if app.descendants(matching:.any)["instruction-panel"].exists {dismissInstructions(app);_=XCTWaiter.wait(for:[clear],timeout:10);Thread.sleep(forTimeInterval:1.5)}
+            let shot=XCTAttachment(screenshot:app.screenshot())
+            shot.name="marketing-\(name)";shot.lifetime = .keepAlways;add(shot)
+            app.terminate()
+        }
+    }
+    /// Real renders of tutorial positions plus each square's projected board-plane
+    /// centre; scripts/build_tutorial_art.swift adds the arrows and badges.
+    func testTutorialArtCaptures() throws {
+        continueAfterFailure=false
+        func capture(_ app:XCUIApplication,_ name:String) {
+            let clear=XCTNSPredicateExpectation(predicate:NSPredicate(format:"value CONTAINS %@","sideVisible:0"),object:app.otherElements["puzzle-status"])
+            _=XCTWaiter.wait(for:[clear],timeout:10);Thread.sleep(forTimeInterval:1.2)
+            var centres:[String:[Double]]=[:]
+            for element in app.descendants(matching:.any).matching(NSPredicate(format:"identifier BEGINSWITH %@","board-plane-")).allElementsBoundByIndex {
+                centres[String(element.identifier.dropFirst(12))]=[Double(element.frame.midX),Double(element.frame.midY)]
+            }
+            let bar=app.otherElements["material-bar"]
+            var meta:[String:Any]=["centres":centres,"width":Double(app.frame.width),"height":Double(app.frame.height),"status":app.otherElements["puzzle-status"].value as? String ?? ""]
+            if bar.exists {meta["bar"]=[bar.frame.minX,bar.frame.minY,bar.frame.width,bar.frame.height].map(Double.init)}
+            let shot=XCTAttachment(screenshot:app.screenshot());shot.name="tutorial-\(name)";shot.lifetime = .keepAlways;add(shot)
+            let data=XCTAttachment(data:try! JSONSerialization.data(withJSONObject:meta,options:[.sortedKeys]),uniformTypeIdentifier:"public.json")
+            data.name="tutorial-\(name)-meta";data.lifetime = .keepAlways;add(data)
+        }
+        // Mate in 2 (white): Re5+ Rd5 Rxd5#. The wrong first move Re4 leaves no mate.
+        var app=XCUIApplication()
+        app.launchArguments=["--uitesting","--tutorial-fixture=7bd568da28d70a64982872c0","--reduced-motion","--cloud-validation","--tutorial-capture","--score=42180"]
+        app.launch();puzzleReady(app,timeout:90)
+        XCTAssertEqual(puzzleValues(app)["id"],"7bd568da28d70a64982872c0-0")
+        capture(app,"mate-start")
+        puzzleMove(app,"e2e4");puzzleReady(app)
+        XCTAssertEqual(puzzleValues(app)["moves"],"2");XCTAssertNotEqual(puzzleValues(app)["offTrack"],"-1")
+        capture(app,"mate-offtrack")
+        app.terminate()
+        // Improve in 2 (white): Nb4+ forks king and rook, then Nxa6.
+        app=XCUIApplication()
+        app.launchArguments=["--uitesting","--tutorial-fixture=ddec583138a388ce3824010e","--reduced-motion","--cloud-validation","--tutorial-capture","--hold-completion","--score=42180"]
+        app.launch();puzzleReady(app,timeout:90)
+        XCTAssertEqual(puzzleValues(app)["id"],"ddec583138a388ce3824010e-0")
+        capture(app,"improve-start")
+        puzzleMove(app,"c2b4");puzzleReady(app)
+        puzzleMove(app,"b4a6")
+        let won=XCTNSPredicateExpectation(predicate:NSPredicate(format:"value CONTAINS %@","phase:won,"),object:app.otherElements["puzzle-status"])
+        XCTAssertEqual(XCTWaiter.wait(for:[won],timeout:40),.completed)
+        Thread.sleep(forTimeInterval:2.5)
+        capture(app,"improve-won")
+        app.terminate()
+    }
+    /// Opens the Premium panel from a due ad break (free play has no hard paywall).
+    private func openPremiumFromAdBreak(_ app:XCUIApplication) {
+        XCTAssertTrue(app.descendants(matching:.any)["ad-break-panel"].waitForExistence(timeout:45))
+        app.buttons["ad-break-premium"].tap()
+    }
+    /// App Review screenshot of the Premium card with both plans (DEBUG plan fixture).
+    @MainActor func testPremiumReviewScreenshot() throws {
+        continueAfterFailure=false
+        let app=XCUIApplication();app.launchArguments=["--uitesting","--monetization-testing","--ad-break-due","--premium-preview","--reduced-motion"]
+        app.launch();openPremiumFromAdBreak(app)
+        XCTAssertTrue(app.staticTexts["subscription-annual-price"].waitForExistence(timeout:20))
+        XCTAssertEqual(app.staticTexts["subscription-savings"].label,"Save 37%")
+        XCTAssertEqual(app.staticTexts["subscription-terms"].label,"Free for 1 month, then $59.99 per year. Auto-renews until canceled.")
+        XCTAssertEqual(app.buttons["subscription-buy"].label,"Start free trial")
+        Thread.sleep(forTimeInterval:1)
+        let shot=XCTAttachment(screenshot:app.screenshot());shot.name="premium-review";shot.lifetime = .keepAlways;add(shot)
+        app.buttons["subscription-plan-monthly"].tap()
+        XCTAssertEqual(app.staticTexts["subscription-terms"].label,"Free for 7 days, then $7.99 per month. Auto-renews until canceled.")
+        let monthly=XCTAttachment(screenshot:app.screenshot());monthly.name="premium-review-monthly";monthly.lifetime = .keepAlways;add(monthly)
+    }
     @MainActor func testSubscriptionPurchaseRestoreAndRevocation() throws {
         continueAfterFailure=false
         let store=try SKTestSession(configurationFileNamed:"CloudChess")
         store.resetToDefaultState();store.clearTransactions();store.disableDialogs=true
         defer {store.clearTransactions()}
         let app=XCUIApplication()
-        app.launchArguments=["--uitesting","--monetization-testing","--quota-exhausted","--reduced-motion"]
-        app.launch()
+        app.launchArguments=["--uitesting","--monetization-testing","--ad-break-due","--reduced-motion"]
+        app.launch();openPremiumFromAdBreak(app)
         let buy=app.buttons["subscription-buy"]
         XCTAssertTrue(buy.waitForExistence(timeout:45))
         let priced=XCTNSPredicateExpectation(predicate:NSPredicate(format:"enabled == true"),object:buy)
         XCTAssertEqual(XCTWaiter.wait(for:[priced],timeout:20),.completed)
         XCTAssertTrue(app.staticTexts["subscription-price"].label.contains("7.99"))
-        let shot=XCTAttachment(screenshot:app.screenshot());shot.name="Unlimited puzzle paywall";shot.lifetime = .keepAlways;add(shot)
+        XCTAssertTrue(app.staticTexts["subscription-annual-price"].label.contains("59.99"))
+        XCTAssertEqual(app.staticTexts["subscription-savings"].label,"Save 37%","59.99 vs 12 × 7.99, rounded down")
+        XCTAssertTrue(app.staticTexts["1-month free trial"].exists);XCTAssertTrue(app.staticTexts["7-day free trial"].exists)
+        XCTAssertEqual(buy.label,"Start free trial")
+        XCTAssertEqual(app.staticTexts["subscription-terms"].label,"Free for 1 month, then $59.99 per year. Auto-renews until canceled.")
+        let shot=XCTAttachment(screenshot:app.screenshot());shot.name="Premium plans with trials";shot.lifetime = .keepAlways;add(shot)
+        app.buttons["subscription-plan-monthly"].tap()
+        XCTAssertEqual(app.staticTexts["subscription-terms"].label,"Free for 7 days, then $7.99 per month. Auto-renews until canceled.")
         buy.tap()
         XCTAssertTrue(app.staticTexts["subscription-active"].waitForExistence(timeout:20))
-        app.buttons["subscription-continue"].tap();puzzleReady(app)
+        app.buttons["subscription-continue"].tap();puzzleReady(app,timeout:90)
         XCTAssertEqual(puzzleValues(app)["unlimited"],"1")
-        // Relaunch with exhausted free quota: StoreKit restores entitlement itself.
-        app.terminate();app.launchArguments += ["--preserve-allowance","--preserve-coach"]
-        app.launch();puzzleReady(app)
-        XCTAssertEqual(puzzleValues(app)["unlimited"],"1")
-        app.buttons["Settings"].tap();app.buttons["Unlimited puzzles"].tap()
+        // Relaunch: StoreKit restores entitlement itself; no ad break.
+        app.terminate();app.launchArguments=["--uitesting","--monetization-testing","--preserve-allowance","--preserve-coach","--reduced-motion"]
+        app.launch();puzzleReady(app,timeout:90)
+        XCTAssertEqual(puzzleValues(app)["unlimited"],"1");XCTAssertEqual(puzzleValues(app)["adBreak"],"0")
+        app.buttons["Settings"].tap();app.buttons["Premium"].tap()
         try store.expireSubscription(productIdentifier:"com.maroon.CloudChess.unlimited.monthly")
         XCTAssertTrue(app.buttons["subscription-restore"].waitForExistence(timeout:20))
         app.buttons["subscription-restore"].tap()
@@ -50,8 +136,8 @@ final class CloudChessUITests:XCTestCase {
         let store=try SKTestSession(configurationFileNamed:"CloudChess")
         store.resetToDefaultState();store.clearTransactions();store.disableDialogs=true;store.askToBuyEnabled=true
         defer {store.clearTransactions()}
-        let app=XCUIApplication();app.launchArguments=["--uitesting","--monetization-testing","--quota-exhausted","--reduced-motion"]
-        app.launch();let buy=app.buttons["subscription-buy"]
+        let app=XCUIApplication();app.launchArguments=["--uitesting","--monetization-testing","--ad-break-due","--reduced-motion"]
+        app.launch();openPremiumFromAdBreak(app);let buy=app.buttons["subscription-buy"]
         XCTAssertTrue(buy.waitForExistence(timeout:45))
         XCTAssertEqual(XCTWaiter.wait(for:[XCTNSPredicateExpectation(predicate:NSPredicate(format:"enabled == true"),object:buy)],timeout:20),.completed)
         buy.tap()
@@ -68,46 +154,129 @@ final class CloudChessUITests:XCTestCase {
     @MainActor func testSubscriptionLargeTextAndDismissal() throws {
         continueAfterFailure=false
         let app=XCUIApplication()
-        app.launchArguments=["--uitesting","--monetization-testing","--quota-exhausted","--reduced-motion","-UIPreferredContentSizeCategoryName","UICTContentSizeCategoryAccessibilityXXXL"]
-        app.launch()
-        let close=app.buttons["Close keep playing"]
+        app.launchArguments=["--uitesting","--monetization-testing","--ad-break-due","--reduced-motion","-UIPreferredContentSizeCategoryName","UICTContentSizeCategoryAccessibilityXXXL"]
+        app.launch();openPremiumFromAdBreak(app)
+        let close=app.buttons["Close cloudchess premium"]
         XCTAssertTrue(close.waitForExistence(timeout:30))
         XCTAssertTrue(close.isHittable);XCTAssertTrue(app.frame.contains(close.frame))
         XCTAssertTrue(app.buttons["subscription-restore"].isHittable)
-        XCTAssertTrue(app.buttons["subscription-free"].isHittable)
         XCTAssertTrue(app.buttons["subscription-buy"].exists)
-        XCTAssertLessThan(app.buttons["subscription-free"].frame.midX,app.buttons["subscription-buy"].frame.midX)
         XCTAssertFalse(app.buttons["square-a1"].exists)
-        let image=XCTAttachment(screenshot:app.screenshot());image.name="Accessible subscription panel";image.lifetime = .keepAlways;add(image)
-        app.buttons["subscription-free"].tap();XCTAssertTrue(app.buttons["Continue playing"].exists)
-        app.buttons["Continue playing"].tap();XCTAssertTrue(close.exists)
+        let image=XCTAttachment(screenshot:app.screenshot());image.name="Accessible Premium panel";image.lifetime = .keepAlways;add(image)
+        close.tap()
+        XCTAssertTrue(app.descendants(matching:.any)["ad-break-panel"].waitForExistence(timeout:5),"Closing Premium returns to the ad break, not a dead end")
+        XCTAssertTrue(app.buttons["ad-break-short"].isHittable);XCTAssertTrue(app.buttons["ad-break-long"].exists)
     }
-
-    @MainActor func testThreePuzzlesThenPaywallAndResume() throws {
+    /// After the introduction, a short ad grants a pace-sized batch; the admitted puzzle resumes free.
+    @MainActor func testAdBreakShortAdGrantsBatchAndResume() throws {
         continueAfterFailure=false
-        let store=try SKTestSession(configurationFileNamed:"CloudChess")
-        store.resetToDefaultState();store.clearTransactions();store.disableDialogs=true
-        let app=XCUIApplication();app.launchArguments=["--uitesting","--monetization-testing","--board=6x6","--reduced-motion"]
-        app.launch();puzzleReady(app)
-        XCTAssertEqual(puzzleValues(app)["freeRemaining"],"5")
-        // Reopening a saved board never uses a second slot.
+        let app=XCUIApplication();app.launchArguments=["--uitesting","--monetization-testing","--ad-break-due","--fast-ads","--board=6x6","--reduced-motion"]
+        app.launch()
+        XCTAssertTrue(app.descendants(matching:.any)["ad-break-panel"].waitForExistence(timeout:45))
+        XCTAssertFalse(app.buttons["square-a1"].exists,"The ad break blocks the board")
+        XCTAssertEqual(puzzleValues(app)["adOffer"],"4|16","No pace history yet: a minute per puzzle")
+        XCTAssertEqual(app.buttons["ad-break-short"].label,"Watch a short ad, 4 more puzzles")
+        let shot=XCTAttachment(screenshot:app.screenshot());shot.name="Ad break choice";shot.lifetime = .keepAlways;add(shot)
+        app.buttons["ad-break-short"].tap()
+        let close=app.buttons["house-ad-close"];XCTAssertTrue(close.waitForExistence(timeout:10))
+        let ad=XCTAttachment(screenshot:app.screenshot());ad.name="Premium house ad (no fill)";ad.lifetime = .keepAlways;add(ad)
+        close.tap();puzzleReady(app,timeout:90)
+        XCTAssertEqual(puzzleValues(app)["freeRemaining"],"3","Four granted, one used by this puzzle")
         let id=puzzleValues(app)["id"]
-        app.terminate();app.launchArguments += ["--preserve-allowance","--preserve-coach"]
-        app.launch();puzzleReady(app)
-        XCTAssertEqual(puzzleValues(app)["id"],id)
-        XCTAssertEqual(puzzleValues(app)["freeRemaining"],"5")
-        for remaining in [4,3,2,1,0] {
-            app.buttons["Skip puzzle"].tap();app.buttons["confirm-action"].tap();puzzleReady(app)
+        app.terminate();app.launchArguments=["--uitesting","--monetization-testing","--preserve-allowance","--preserve-coach","--board=6x6","--reduced-motion"]
+        app.launch();puzzleReady(app,timeout:90)
+        XCTAssertEqual(puzzleValues(app)["id"],id);XCTAssertEqual(puzzleValues(app)["freeRemaining"],"3","Resuming never spends another puzzle")
+        for remaining in [2,1,0] {
+            app.buttons["Skip puzzle"].tap();app.buttons["confirm-action"].tap();puzzleReady(app,timeout:90)
             XCTAssertEqual(puzzleValues(app)["freeRemaining"],String(remaining))
         }
-        app.buttons["Skip puzzle"].tap();app.buttons["confirm-action"].tap()
-        XCTAssertTrue(app.buttons["subscription-buy"].waitForExistence(timeout:15))
-        XCTAssertEqual(puzzleValues(app)["freeRemaining"],"0")
-        XCTAssertFalse(app.buttons["square-a1"].exists)
-        app.buttons["Close keep playing"].tap()
-        XCTAssertTrue(app.buttons["Continue playing"].exists)
-        app.buttons["Continue playing"].tap()
-        XCTAssertTrue(app.buttons["subscription-restore"].exists)
+        // The batch is used, but the four-minute gap since the break keeps play free.
+        app.buttons["Skip puzzle"].tap();app.buttons["confirm-action"].tap();puzzleReady(app,timeout:90)
+        XCTAssertEqual(puzzleValues(app)["adBreak"],"0")
+    }
+    @MainActor func testAdBreakLongBundleAndBackgroundForfeit() throws {
+        continueAfterFailure=false
+        let app=XCUIApplication();app.launchArguments=["--uitesting","--monetization-testing","--ad-break-due","--fast-ads","--reduced-motion"]
+        app.launch()
+        XCTAssertTrue(app.buttons["ad-break-long"].waitForExistence(timeout:45))
+        app.buttons["ad-break-long"].tap()
+        // Leaving during an ad forfeits that break; it is offered again with the same sizes.
+        XCTAssertTrue(app.descendants(matching:.any)["house-ad"].waitForExistence(timeout:10))
+        XCUIDevice.shared.press(.home);Thread.sleep(forTimeInterval:1);app.activate()
+        let resume=app.buttons["continue-session"];if resume.waitForExistence(timeout:5) {resume.tap()}
+        XCTAssertTrue(app.buttons["ad-break-long"].waitForExistence(timeout:20))
+        XCTAssertEqual(puzzleValues(app)["adOffer"],"4|16");XCTAssertEqual(puzzleValues(app)["freeRemaining"],"0")
+        app.buttons["ad-break-long"].tap()
+        for n in 1...3 {
+            let close=app.buttons["house-ad-close"];XCTAssertTrue(close.waitForExistence(timeout:10),"Ad \(n) of 3")
+            close.tap()
+        }
+        puzzleReady(app,timeout:90)
+        XCTAssertEqual(puzzleValues(app)["freeRemaining"],"15","Sixteen granted after all three ads, one used")
+    }
+    /// The real Google Mobile Ads SDK with Google's sample rewarded unit (DEBUG builds never request
+    /// live ads): consent/IDFA messages, load, present, reward callback, batch grant and resume.
+    @MainActor func testGoogleSampleRewardedAdGrantsBatch() throws {
+        continueAfterFailure=false
+        let springboard=XCUIApplication(bundleIdentifier:"com.apple.springboard")
+        let app=XCUIApplication();app.launchArguments=["--uitesting","--monetization-testing","--ad-break-due","--real-ads","--board=6x6","--reduced-motion"]
+        app.launch()
+        func answerPrompts() {
+            for label in ["Ask App Not to Track","Don’t Allow"] {let b=springboard.buttons[label];if b.exists {b.tap();return}}
+            // Google's IDFA explainer / consent form is a web view; its controls surface as buttons or links.
+            for label in ["Continue","Consent","Do not consent"] {
+                // UMP's web view reports its controls as not hittable, so tap their centre.
+                // Google keeps a second, offscreen copy of its form, so pick the copy on screen.
+                let screen=app.frame
+                for query in [app.buttons.matching(identifier:label),app.links.matching(identifier:label)] {
+                    for b in query.allElementsBoundByIndex where !b.frame.isEmpty && screen.contains(CGPoint(x:b.frame.midX,y:b.frame.midY)) {
+                        b.coordinate(withNormalizedOffset:CGVector(dx:0.5,dy:0.5)).tap();return
+                    }
+                }
+            }
+        }
+        var deadline=Date().addingTimeInterval(120)
+        while puzzleValues(app)["googleAd"] != "loaded",Date()<deadline {answerPrompts();Thread.sleep(forTimeInterval:1)}
+        XCTAssertEqual(puzzleValues(app)["googleAd"],"loaded","Google's sample ad loads: \(puzzleValues(app)["googleAd"] ?? "")")
+        XCTAssertTrue(app.buttons["ad-break-short"].waitForExistence(timeout:10))
+        XCTAssertEqual(puzzleValues(app)["adOffer"],"4|16")
+        app.buttons["ad-break-short"].tap()
+        // Google's full-screen ad covers the game, hiding its accessibility tree while it plays.
+        let status=app.otherElements["puzzle-status"]
+        let covered=XCTNSPredicateExpectation(predicate:NSPredicate(format:"exists == false"),object:status)
+        XCTAssertEqual(XCTWaiter.wait(for:[covered],timeout:15),.completed,"The rewarded ad is presented")
+        Thread.sleep(forTimeInterval:4)
+        let showing=XCTAttachment(screenshot:XCUIScreen.main.screenshot());showing.name="Google sample rewarded ad";showing.lifetime = .keepAlways;add(showing)
+        // Watch past the reward countdown, then close the ad.
+        Thread.sleep(forTimeInterval:30)
+        deadline=Date().addingTimeInterval(90)
+        while !status.exists,Date()<deadline {
+            let resume=app.buttons.matching(NSPredicate(format:"label CONTAINS[c] 'resume'")).firstMatch
+            if resume.exists,resume.isHittable {resume.tap();Thread.sleep(forTimeInterval:10);continue}
+            // Google's sample ad draws its close X at the top right beside "Reward granted"; its
+            // accessible "Close Advertisement" button is a separate element that taps don't reach.
+            app.coordinate(withNormalizedOffset:CGVector(dx:0.94,dy:0.099)).tap()
+            Thread.sleep(forTimeInterval:2)
+        }
+        XCTAssertTrue(status.waitForExistence(timeout:5),"The ad closes")
+        XCTAssertNotEqual(puzzleValues(app)["googleAd"],"showing")
+        XCTAssertEqual(puzzleValues(app)["adBreak"],"0","A watched ad grants the batch instead of re-offering the break")
+        XCTAssertEqual(puzzleValues(app)["houseAd"],"0","No house-ad fallback when Google filled the request")
+        puzzleReady(app,timeout:90)
+        XCTAssertEqual(puzzleValues(app)["freeRemaining"],"3","Four granted, one used by this puzzle")
+        let after=XCTAttachment(screenshot:app.screenshot());after.name="Puzzle after the rewarded ad";after.lifetime = .keepAlways;add(after)
+    }
+    @MainActor func testOfflineFreePlayIsBlocked() throws {
+        continueAfterFailure=false
+        let app=XCUIApplication();app.launchArguments=["--uitesting","--monetization-testing","--offline","--reduced-motion"]
+        app.launch()
+        let message=app.staticTexts["offline-message"]
+        XCTAssertTrue(message.waitForExistence(timeout:45))
+        XCTAssertEqual(message.label,"While this app does run offline, we rely on ads to support the app. Please either subscribe or turn on data.")
+        XCTAssertTrue(app.staticTexts["Hey!"].exists);XCTAssertFalse(app.buttons["square-a1"].exists)
+        let shot=XCTAttachment(screenshot:app.screenshot());shot.name="Offline free play blocked";shot.lifetime = .keepAlways;add(shot)
+        app.buttons["offline-retry"].tap();XCTAssertTrue(message.waitForExistence(timeout:5),"Still offline")
+        app.buttons["offline-subscribe"].tap();XCTAssertTrue(app.descendants(matching:.any)["subscription-panel"].waitForExistence(timeout:10))
     }
 
     func testPrivacySupportAndLicensePanels() throws {
@@ -160,6 +329,10 @@ final class CloudChessUITests:XCTestCase {
         let ready=XCTNSPredicateExpectation(predicate:NSPredicate(format:"value CONTAINS %@ AND value CONTAINS %@","ready:1,","evaluating:0,"),object:status)
         let outcome=XCTWaiter.wait(for:[ready],timeout:timeout)
         XCTAssertEqual(outcome,.completed,"Puzzle readiness: \(status.value ?? "missing")")
+        dismissInstructions(app)
+    }
+    private func dismissInstructions(_ app:XCUIApplication) {
+        for _ in 0..<4 {let next=app.buttons["tutorial-next"];if next.exists {next.tap();Thread.sleep(forTimeInterval:0.35)} else {break}}
         let info=app.buttons["acknowledge-instructions"];if info.exists {info.tap()}
     }
     private func openCollection(_ app:XCUIApplication) {
@@ -175,7 +348,7 @@ final class CloudChessUITests:XCTestCase {
         XCTAssertEqual(XCTWaiter.wait(for:[changed],timeout:40),.completed)
         let values=puzzleValues(app)
         print("HANDOFF_EVIDENCE \(values["lastJourneyMs"] ?? "missing")")
-        let info=app.buttons["acknowledge-instructions"];if info.exists {info.tap()}
+        dismissInstructions(app)
         XCTAssertEqual(values["boardMatches"],"1")
         let image=XCTAttachment(screenshot:app.screenshot());image.name="Responsive original set and larger board";image.lifetime = .keepAlways;add(image)
     }
@@ -280,37 +453,54 @@ final class CloudChessUITests:XCTestCase {
         app.buttons["Close collection"].tap()
         XCTAssertEqual(puzzleValues(app)["moves"],before["moves"])
     }
-    func testStagedHintsRestoreAndDiscountOnlyReward() throws {
+    func testKeyPieceHintOncePerMoveAndDiscountOnlyReward() throws {
         continueAfterFailure=false
         let app=XCUIApplication();app.launchArguments=["--uitesting","--board=6x6","--puzzle-mate=2","--score=1000000","--reduced-motion"];app.launch();puzzleReady(app)
         let initial=puzzleValues(app),reward=Double(initial["reward"]!)!
-        app.buttons["Hint"].tap();app.buttons["cancel-action"].tap()
-        XCTAssertEqual(puzzleValues(app)["hintDiscounts"],"0")
-        for stage in 1...3 {
-            app.buttons["Hint"].tap();XCTAssertTrue(app.staticTexts.containing(NSPredicate(format:"label CONTAINS %@","10%")).firstMatch.exists)
-            app.buttons["confirm-action"].tap()
-            let status=app.otherElements["puzzle-status"]
-            expectation(for:NSPredicate(format:"value CONTAINS %@","hintStage:\(stage),"),evaluatedWith:status);waitForExpectations(timeout:20)
-            let v=puzzleValues(app)
-            XCTAssertEqual(v["score"],initial["score"]);XCTAssertEqual(v["moves"],"0");XCTAssertEqual(v["mistakes"],"0")
-            XCTAssertEqual(v["hintDiscounts"],String(stage));XCTAssertEqual(Double(v["reward"]!)!,reward*pow(0.9,Double(stage)),accuracy:2)
-            if stage==1 {XCTAssertEqual(v["hintMarks"],"4");XCTAssertEqual(v["selected"],"")}
-            if stage==2 {XCTAssertEqual(v["selected"],String(initial["next"]!.prefix(2)))}
-            if stage==3 {
-                XCTAssertTrue(app.buttons["close-replay"].waitForExistence(timeout:5))
-                XCTAssertFalse(app.buttons["square-a1"].exists)
-                XCTAssertEqual(v["replayIndex"],"0","Reduce Motion uses manual replay steps")
-                app.buttons["replay-next"].tap();XCTAssertEqual(puzzleValues(app)["replayIndex"],"1")
-                app.buttons["replay-back"].tap();XCTAssertEqual(puzzleValues(app)["replayIndex"],"0")
-                let shot=XCTAttachment(screenshot:app.screenshot());shot.name="Slow hint demonstration controls";shot.lifetime = .keepAlways;add(shot)
-                app.buttons["close-replay"].tap()
-            }
-        }
-        XCTAssertEqual(puzzleValues(app)["boardMatches"],"1");XCTAssertEqual(puzzleValues(app)["moves"],"0")
-        XCTAssertFalse(app.buttons["Hint"].isEnabled)
+        app.buttons["Hint"].tap();XCTAssertTrue(app.staticTexts["Reveal the key piece?"].waitForExistence(timeout:5))
+        XCTAssertTrue(app.otherElements["hint-cost"].exists || app.staticTexts["hint-cost"].exists,"The reward cut is drawn, not just described")
+        let card=XCTAttachment(screenshot:app.screenshot());card.name="Hint cost graphic";card.lifetime = .keepAlways;add(card)
+        app.buttons["cancel-action"].tap()
+        XCTAssertEqual(puzzleValues(app)["hintDiscounts"],"0","Cancelling never charges")
+        app.buttons["Hint"].tap();app.buttons["confirm-action"].tap()
+        let status=app.otherElements["puzzle-status"]
+        expectation(for:NSPredicate(format:"value CONTAINS %@","hintPulse:1,"),evaluatedWith:status);waitForExpectations(timeout:20)
+        var v=puzzleValues(app)
+        XCTAssertEqual(v["score"],initial["score"]);XCTAssertEqual(v["moves"],"0");XCTAssertEqual(v["mistakes"],"0")
+        XCTAssertEqual(v["hintDiscounts"],"1");XCTAssertEqual(Double(v["reward"]!)!,reward*0.9,accuracy:2)
+        XCTAssertFalse(app.buttons["Hint"].isEnabled,"One hint per move")
+        // The key piece pulses for about three seconds, then the board is plain again.
+        expectation(for:NSPredicate(format:"value CONTAINS %@","hintPulse:0,"),evaluatedWith:status);waitForExpectations(timeout:6)
+        XCTAssertFalse(app.buttons["Hint"].isEnabled,"Still no second hint at the same position")
         puzzleMove(app,initial["next"]!);puzzleReady(app)
-        XCTAssertTrue(app.buttons["Hint"].isEnabled,"Next decision starts a new staged hint")
-        XCTAssertEqual(puzzleValues(app)["hintDiscounts"],"3","Prior discounts survive a correct move")
+        XCTAssertTrue(app.buttons["Hint"].isEnabled,"The next move earns a new hint")
+        v=puzzleValues(app);XCTAssertEqual(v["hintDiscounts"],"1","Prior discounts survive a correct move")
+    }
+    func testUndoIsFreeAndRewindsOneTurn() throws {
+        continueAfterFailure=false
+        let app=XCUIApplication();app.launchArguments=["--uitesting","--board=6x6","--puzzle-mate=3","--hold-completion","--reduced-motion"];app.launch();puzzleReady(app)
+        let original=puzzleValues(app),value=pow(Double(original["itemRating"]!)!,1.5)
+        XCTAssertFalse(app.buttons["Undo move"].isEnabled,"Nothing to undo yet")
+        for _ in 0..<2 {puzzleMove(app,puzzleValues(app)["next"]!);puzzleReady(app)}
+        XCTAssertEqual(puzzleValues(app)["moves"],"4")
+        for index in 1...2 {
+            app.buttons["Undo move"].tap();puzzleReady(app)
+            XCTAssertFalse(app.descendants(matching:.any)["confirmation-panel"].exists,"Undo needs no confirmation")
+            XCTAssertEqual(puzzleValues(app)["id"],original["id"])
+            XCTAssertEqual(puzzleValues(app)["moves"],String(4-index*2))
+            XCTAssertEqual(puzzleValues(app)["undos"],String(index))
+            XCTAssertEqual(Double(puzzleValues(app)["reward"]!)!,value,accuracy:2,"Undo never lowers the reward")
+            XCTAssertEqual(puzzleValues(app)["score"],"0")
+        }
+        XCTAssertFalse(app.buttons["Undo move"].isEnabled)
+        for _ in 0..<3 {
+            if puzzleValues(app)["completed"]=="1" {break}
+            puzzleMove(app,puzzleValues(app)["next"]!)
+            if puzzleValues(app)["completed"] != "1" {puzzleReady(app)}
+        }
+        XCTAssertEqual(puzzleValues(app)["completed"],"1")
+        XCTAssertEqual(Double(puzzleValues(app)["score"]!)!,value,accuracy:2,"Full reward after undoing")
+        XCTAssertEqual(puzzleValues(app)["error"],"0")
     }
     func testCloudJourneyAndOptionalPreviousPuzzleReplay() throws {
         continueAfterFailure=false
@@ -330,14 +520,8 @@ final class CloudChessUITests:XCTestCase {
         XCTAssertGreaterThanOrEqual(Int(current["lastJourneyMs"]!)!,800)
         XCTAssertEqual(current["journeyFallbacks"],"0","Fast generation stays inside the cloud transition")
         XCTAssertLessThan(Int(current["lastJourneyMs"]!)!,2200)
-        app.buttons["Watch the key moment"].tap()
-        XCTAssertTrue(app.buttons["close-replay"].waitForExistence(timeout:5))
-        XCTAssertEqual(puzzleValues(app)["moves"],current["moves"])
-        XCTAssertEqual(puzzleValues(app)["score"],current["score"])
-        app.buttons["replay-play"].tap()
-        let lesson=XCTAttachment(screenshot:app.screenshot());lesson.name="Optional key moment replay";lesson.lifetime = .keepAlways;add(lesson)
-        app.buttons["close-replay"].tap()
-        XCTAssertEqual(puzzleValues(app)["boardMatches"],"1");XCTAssertEqual(puzzleValues(app)["id"],current["id"])
+        XCTAssertFalse(app.buttons["Watch the key moment"].exists,"The replay button was removed from the dock")
+        XCTAssertEqual(puzzleValues(app)["boardMatches"],"1")
     }
     func testCloudJourneyLoadingFallback() throws {
         continueAfterFailure=false
@@ -349,35 +533,6 @@ final class CloudChessUITests:XCTestCase {
         puzzleReady(app)
         XCTAssertEqual(puzzleValues(app)["journey"],"0");XCTAssertEqual(puzzleValues(app)["journeyFallbacks"],"1")
         XCTAssertEqual(puzzleValues(app)["boardMatches"],"1")
-    }
-    func testReplayClosesOnBackgroundWithoutChangingAttempt() throws {
-        continueAfterFailure=false
-        let app=XCUIApplication();app.launchArguments=["--uitesting","--board=4x6","--puzzle-mate=2","--score=1000000"];app.launch();puzzleReady(app)
-        for _ in 0..<3 {app.buttons["Hint"].tap();app.buttons["confirm-action"].tap();if !app.buttons["close-replay"].exists {puzzleReady(app)}}
-        XCTAssertTrue(app.buttons["close-replay"].waitForExistence(timeout:5))
-        let before=puzzleValues(app)
-        XCUIDevice.shared.press(.home);app.activate()
-        XCTAssertTrue(app.buttons["continue-session"].waitForExistence(timeout:10))
-        XCTAssertEqual(puzzleValues(app)["replay"],"0");XCTAssertEqual(puzzleValues(app)["moves"],before["moves"])
-        XCTAssertEqual(puzzleValues(app)["score"],before["score"])
-        puzzleReady(app)
-        XCTAssertEqual(puzzleValues(app)["boardMatches"],"1")
-    }
-    func testMistakeReplayUsesExistingAnalysisAndRestoresFailure() throws {
-        continueAfterFailure=false
-        let app=XCUIApplication();app.launchArguments=["--uitesting","--challenge=finish","--challenge-fixture=white","--reduced-motion","--score=1000000"];app.launch();puzzleReady(app)
-        puzzleMove(app,"g6g8")
-        let status=app.otherElements["puzzle-status"]
-        expectation(for:NSPredicate(format:"value CONTAINS %@ AND value CONTAINS %@","phase:failed,","evaluating:0,"),evaluatedWith:status);waitForExpectations(timeout:60)
-        let before=puzzleValues(app)
-        XCTAssertTrue(app.buttons["Watch the key moment"].exists)
-        let started=Date();app.buttons["Watch the key moment"].tap()
-        XCTAssertTrue(app.buttons["close-replay"].waitForExistence(timeout:3))
-        XCTAssertLessThan(Date().timeIntervalSince(started),3,"Opening the replay does not start a new analysis")
-        app.buttons["replay-next"].tap();app.buttons["replay-next"].tap()
-        XCTAssertEqual(puzzleValues(app)["moves"],before["moves"]);XCTAssertEqual(puzzleValues(app)["score"],before["score"])
-        app.buttons["close-replay"].tap()
-        XCTAssertEqual(puzzleValues(app)["phase"],"failed");XCTAssertEqual(puzzleValues(app)["boardMatches"],"1")
     }
     func testInstructionPopupBoundsAndBlockedBoard() throws {
         continueAfterFailure=false
@@ -505,9 +660,9 @@ final class CloudChessUITests:XCTestCase {
             let info=app.buttons["Challenge information"]
             XCTAssertTrue(info.isEnabled);XCTAssertGreaterThanOrEqual(info.frame.width,44);XCTAssertGreaterThanOrEqual(info.frame.height,44)
             info.coordinate(withNormalizedOffset:point).tap()
-            XCTAssertTrue(app.buttons["acknowledge-instructions"].waitForExistence(timeout:3),"The entire info button must respond, including its padded corners")
+            XCTAssertTrue(app.descendants(matching:.any)["instruction-panel"].waitForExistence(timeout:3),"The entire info button must respond, including its padded corners")
             XCTAssertTrue(app.staticTexts["challenge-explanation"].exists)
-            app.buttons["acknowledge-instructions"].tap();puzzleReady(app)
+            dismissInstructions(app);puzzleReady(app)
             XCTAssertEqual(puzzleValues(app)["id"],original["id"])
             XCTAssertEqual(puzzleValues(app)["moves"],original["moves"])
             XCTAssertEqual(puzzleValues(app)["score"],original["score"])
@@ -522,7 +677,7 @@ final class CloudChessUITests:XCTestCase {
         app.buttons["Challenge information"].tap()
         XCTAssertTrue(app.staticTexts["challenge-explanation"].waitForExistence(timeout:5))
         XCTAssertFalse(app.alerts["Read the instructions again?"].exists)
-        app.buttons["acknowledge-instructions"].tap();puzzleReady(app)
+        dismissInstructions(app);puzzleReady(app)
         XCTAssertEqual(puzzleValues(app)["id"],original["id"])
         XCTAssertEqual(puzzleValues(app)["moves"],original["moves"])
         app.buttons["Settings"].tap()
@@ -563,7 +718,7 @@ final class CloudChessUITests:XCTestCase {
             let app=XCUIApplication();app.launchArguments=["--uitesting","--challenge=\(kind)","--challenge-fixture=white","--hold-completion","--reduced-motion"];app.launch()
             XCTAssertTrue(app.staticTexts["long-puzzle-reward"].waitForExistence(timeout:40))
             XCTAssertTrue(app.staticTexts["long-puzzle-reward"].label.contains(multiplier==3 ? "3×":"2.5×"))
-            app.buttons["acknowledge-instructions"].tap();puzzleReady(app)
+            dismissInstructions(app);puzzleReady(app)
             let initial=puzzleValues(app),value=pow(Double(initial["itemRating"]!)!,1.5)*multiplier
             puzzleMove(app,initial["next"]!)
             expectation(for:NSPredicate(format:"value CONTAINS %@","completed:1,"),evaluatedWith:app.otherElements["puzzle-status"]);waitForExpectations(timeout:30)
@@ -642,7 +797,7 @@ final class CloudChessUITests:XCTestCase {
         let paused=puzzleValues(app)["score"]
         Thread.sleep(forTimeInterval:2);XCTAssertEqual(puzzleValues(app)["score"],paused)
         let shot=XCTAttachment(screenshot:app.screenshot());shot.name="Instructions popup over the board";shot.lifetime = .keepAlways;add(shot)
-        app.buttons["acknowledge-instructions"].tap();puzzleReady(app)
+        dismissInstructions(app);puzzleReady(app)
         let initial=puzzleValues(app)
         Thread.sleep(forTimeInterval:2);XCTAssertEqual(puzzleValues(app)["score"],initial["score"])
         app.buttons["Challenge information"].tap()
@@ -651,11 +806,11 @@ final class CloudChessUITests:XCTestCase {
         XCTAssertFalse(app.staticTexts["first-instruction-notice"].exists)
         let reread=puzzleValues(app)["score"]
         Thread.sleep(forTimeInterval:2);XCTAssertEqual(puzzleValues(app)["score"],reread)
-        app.buttons["acknowledge-instructions"].tap();puzzleReady(app)
+        dismissInstructions(app);puzzleReady(app)
         let fresh=puzzleValues(app)
         XCTAssertEqual(fresh["id"],initial["id"],"Rereading keeps the current puzzle")
         XCTAssertEqual(fresh["instructionType"],initial["instructionType"])
-        XCTAssertFalse(app.buttons["acknowledge-instructions"].exists,"Only one automatic panel per type")
+        XCTAssertFalse(app.descendants(matching:.any)["instruction-panel"].exists,"Only one automatic panel per type")
         XCTAssertEqual(fresh["completed"],"0","Reading is not a failed chess attempt")
         XCTAssertEqual(fresh["error"],"0")
     }
@@ -672,7 +827,7 @@ final class CloudChessUITests:XCTestCase {
         app.buttons["continue-session"].tap();puzzleReady(app)
         let next=puzzleValues(app)
         XCTAssertEqual(next["id"],old["id"]);XCTAssertEqual(next["instructionType"],old["instructionType"])
-        XCTAssertFalse(app.buttons["acknowledge-instructions"].exists)
+        XCTAssertFalse(app.descendants(matching:.any)["instruction-panel"].exists)
         XCTAssertEqual(next["score"],score)
         XCTAssertEqual(next["completed"],"0")
         app.terminate();app.launchArguments=["--uitesting","--preserve-coach","--reduced-motion"];app.launch()
@@ -685,26 +840,33 @@ final class CloudChessUITests:XCTestCase {
     }
     func testPuzzleScopedHeartsAndPenalties() throws {
         continueAfterFailure=false
-        let app=XCUIApplication();app.launchArguments=["--uitesting","--board=6x6","--puzzle-mate=3","--reduced-motion","--score=1000000"];app.launch();puzzleReady(app)
-        func mistake() {
+        let app=XCUIApplication();app.launchArguments=["--uitesting","--board=6x6","--puzzle-mate=2","--reduced-motion","--score=1000000"];app.launch();puzzleReady(app)
+        func finalMistake() {
             let v=puzzleValues(app),winning=Set(v["winning"]!.split(separator:"|"))
             let bad=v["legal"]!.split(separator:"|").first{!winning.contains($0) && $0.count==4}!
             puzzleMove(app,String(bad));puzzleReady(app)
         }
         let original=puzzleValues(app),value=pow(Double(original["itemRating"]!)!,1.5)
-        XCTAssertEqual(original["cooldowns"],"0")
-        mistake();XCTAssertEqual(puzzleValues(app)["hearts"],"2")
+        XCTAssertEqual(original["retired"],"0")
+        puzzleMove(app,original["next"]!);puzzleReady(app)
+        XCTAssertEqual(puzzleValues(app)["hearts"],"3","A move inside the budget never costs a heart")
+        finalMistake();XCTAssertEqual(puzzleValues(app)["hearts"],"2")
+        XCTAssertEqual(puzzleValues(app)["moves"],"2","Only the missed final try is taken back")
+        Thread.sleep(forTimeInterval:2)
+        XCTAssertEqual(puzzleValues(app)["undoTipEvents"],"0","The mate is still available: no undo tip");XCTAssertFalse(app.buttons["undo-tip"].exists)
         XCTAssertEqual(puzzleValues(app)["mistakeFeedback"],"1");XCTAssertEqual(puzzleValues(app)["scoreDirection"],"-1")
         XCTAssertEqual(Double(puzzleValues(app)["score"]!)!,1_000_000-value*0.25,accuracy:2)
+        app.buttons["Undo move"].tap();puzzleReady(app)
+        XCTAssertEqual(puzzleValues(app)["moves"],"0")
+        XCTAssertEqual(puzzleValues(app)["hearts"],"2","Attempts belong to this puzzle; undo does not refill")
         puzzleMove(app,puzzleValues(app)["next"]!);puzzleReady(app)
-        XCTAssertEqual(puzzleValues(app)["hearts"],"2","Attempts belong to this puzzle; correct play does not refill")
-        mistake();XCTAssertEqual(puzzleValues(app)["hearts"],"1")
+        finalMistake();XCTAssertEqual(puzzleValues(app)["hearts"],"1")
         // The failed position stays visible before the cloud journey (1.2 s under reduced motion).
         let hold=failureHold(app) {let v=puzzleValues(app),winning=Set(v["winning"]!.split(separator:"|"));puzzleMove(app,String(v["legal"]!.split(separator:"|").first{!winning.contains($0) && $0.count==4}!))}
-        XCTAssertGreaterThanOrEqual(hold,1.0,"Third mistake rests on the failed position before the journey")
+        XCTAssertGreaterThanOrEqual(hold,1.0,"Third lost heart rests on the failed position before the journey")
         puzzleReady(app);let after=puzzleValues(app)
         XCTAssertNotEqual(after["id"],original["id"]);XCTAssertEqual(after["hearts"],"3")
-        XCTAssertEqual(after["cooldowns"],"1","The failed puzzle rests behind a cooldown")
+        XCTAssertEqual(after["retired"],"1","The failed puzzle is retired, never repeated")
         XCTAssertEqual(Double(after["score"]!)!,max(0,1_000_000-value*2.5),accuracy:2)
         XCTAssertEqual(after["mistakeFeedback"],"3");XCTAssertEqual(after["scoreEvents"],"3")
         XCTAssertEqual(after["best"],"1000000","A failed puzzle never resets the lifetime high")
@@ -715,8 +877,60 @@ final class CloudChessUITests:XCTestCase {
         app.buttons["Skip puzzle"].tap();app.buttons["confirm-action"].tap();puzzleReady(app)
         XCTAssertEqual(Double(puzzleValues(app)["score"]!)!,max(0,Double(after["score"]!)!-skip),accuracy:2)
         XCTAssertEqual(puzzleValues(app)["error"],"0")
+        XCTAssertEqual(puzzleValues(app)["retired"],"2","A skip retires its puzzle too")
         XCTAssertEqual(puzzleValues(app)["scoreEvents"],"4");XCTAssertEqual(puzzleValues(app)["outcomeHaptics"],"4")
         let shot=XCTAttachment(screenshot:app.screenshot());shot.name="Per-puzzle hearts and lifetime crown";shot.lifetime = .keepAlways;add(shot)
+    }
+    /// Mate in x plays on after a wrong move; the misstep hint and undo recover it.
+    func testMoveBudgetPlayOnHintAndUndo() throws {
+        continueAfterFailure=false
+        let app=XCUIApplication();app.launchArguments=["--uitesting","--board=6x6","--puzzle-mate=2","--reduced-motion","--score=100000"];app.launch();puzzleReady(app)
+        XCTAssertTrue(app.staticTexts["Mate in 2"].exists)
+        XCTAssertEqual(app.otherElements["moves-used"].value as? String,"0 of 2")
+        let start=puzzleValues(app),winning=Set(start["winning"]!.split(separator:"|"))
+        let wrong=String(start["legal"]!.split(separator:"|").first{!winning.contains($0) && $0.count==4}!)
+        puzzleMove(app,wrong);puzzleReady(app)
+        var v=puzzleValues(app)
+        XCTAssertEqual(v["moves"],"2","A wrong move is answered, not rejected")
+        XCTAssertEqual(v["hearts"],"3");XCTAssertEqual(v["mistakeFeedback"],"0");XCTAssertEqual(v["offTrack"],"0")
+        XCTAssertEqual(v["score"],start["score"]);XCTAssertEqual(app.otherElements["moves-used"].value as? String,"1 of 2")
+        app.buttons["Hint"].tap();XCTAssertTrue(app.staticTexts["Reveal the misstep?"].waitForExistence(timeout:5))
+        app.buttons["confirm-action"].tap();puzzleReady(app)
+        v=puzzleValues(app)
+        XCTAssertEqual(v["hintStage"],"1");XCTAssertEqual(v["hintPulse"],"1","The misstepping piece pulses");XCTAssertFalse(app.buttons["Hint"].isEnabled)
+        let final=String(v["legal"]!.split(separator:"|").first{$0.count==4}!)
+        puzzleMove(app,final);puzzleReady(app)
+        v=puzzleValues(app)
+        XCTAssertEqual(v["hearts"],"2","Using both moves without mate costs a heart");XCTAssertEqual(v["moves"],"2");XCTAssertEqual(v["mistakeFeedback"],"1")
+        let tip=app.buttons["undo-tip"];XCTAssertTrue(tip.waitForExistence(timeout:10),"No mate remains here: suggest undoing earlier moves")
+        XCTAssertEqual(tip.label,"Hint: you may want to undo some previous moves!")
+        let toast=XCTAttachment(screenshot:app.screenshot());toast.name="Undo tip";toast.lifetime = .keepAlways;add(toast)
+        XCTAssertEqual(puzzleValues(app)["undoTipEvents"],"1");XCTAssertEqual(puzzleValues(app)["undoTipsShown"],"1")
+        app.buttons["Undo move"].tap();puzzleReady(app)
+        v=puzzleValues(app)
+        XCTAssertEqual(v["moves"],"0");XCTAssertEqual(v["offTrack"],"-1");XCTAssertEqual(v["undos"],"1");XCTAssertEqual(v["hearts"],"2")
+        XCTAssertFalse(app.buttons["undo-tip"].exists,"Undo dismisses the tip")
+        puzzleMove(app,v["next"]!);puzzleReady(app);puzzleMove(app,puzzleValues(app)["next"]!)
+        expectation(for:NSPredicate(format:"value CONTAINS %@","completed:1,"),evaluatedWith:app.otherElements["puzzle-status"]);waitForExpectations(timeout:40)
+    }
+    /// Improve in x: the horizon reply decides; no net gain costs a heart and rewinds one turn.
+    func testImproveInXHorizonHeartAndMaterialBar() throws {
+        continueAfterFailure=false
+        let app=XCUIApplication();app.launchArguments=["--uitesting","--tutorial-fixture=ddec583138a388ce3824010e","--reduced-motion","--score=100000"];app.launch();puzzleReady(app)
+        XCTAssertTrue(app.staticTexts["Improve position in 2"].exists)
+        let bar=app.otherElements["material-bar"];XCTAssertTrue(bar.exists)
+        XCTAssertEqual(bar.value as? String,"Level with the start")
+        XCTAssertEqual(puzzleValues(app)["startMaterial"],"-1")
+        puzzleMove(app,"b3c3");puzzleReady(app)
+        XCTAssertEqual(puzzleValues(app)["moves"],"2");XCTAssertEqual(puzzleValues(app)["hearts"],"3")
+        puzzleMove(app,"c3d3");puzzleReady(app)
+        let v=puzzleValues(app)
+        XCTAssertEqual(v["hearts"],"2","Finishing below the start costs a heart");XCTAssertEqual(v["moves"],"2","The horizon turn is taken back for free")
+        XCTAssertEqual(v["undos"],"0");XCTAssertEqual(v["mistakeFeedback"],"1")
+        XCTAssertTrue(app.buttons["undo-tip"].waitForExistence(timeout:10),"After Kc3 Rc6+ no net gain is forced: suggest undo")
+        app.buttons["Undo move"].tap();puzzleReady(app)
+        puzzleMove(app,"c2b4");puzzleReady(app);puzzleMove(app,"b4a6")
+        expectation(for:NSPredicate(format:"value CONTAINS %@","completed:1,"),evaluatedWith:app.otherElements["puzzle-status"]);waitForExpectations(timeout:40)
     }
     /// Seconds between the first `phase:failed,` observation and the start of the cloud journey.
     private func failureHold(_ app:XCUIApplication,after action:()->Void)->Double {
@@ -732,14 +946,15 @@ final class CloudChessUITests:XCTestCase {
     }
     func testFailureHoldWithMotion() throws {
         continueAfterFailure=false
-        let app=XCUIApplication();app.launchArguments=["--uitesting","--board=6x6","--puzzle-mate=3","--score=1000000"];app.launch();puzzleReady(app)
+        let app=XCUIApplication();app.launchArguments=["--uitesting","--board=6x6","--puzzle-mate=1","--score=1000000"];app.launch();puzzleReady(app)
         func bad()->String {let v=puzzleValues(app),winning=Set(v["winning"]!.split(separator:"|"));return String(v["legal"]!.split(separator:"|").first{!winning.contains($0) && $0.count==4}!)}
+        XCTAssertEqual(puzzleValues(app)["moves"],"0")
         for _ in 0..<2 {puzzleMove(app,bad());puzzleReady(app)}
         XCTAssertEqual(puzzleValues(app)["hearts"],"1")
         let hold=failureHold(app) {puzzleMove(app,bad())}
         XCTAssertGreaterThanOrEqual(hold,1.5,"Third mistake rests 1.8 s with motion on")
         puzzleReady(app);let after=puzzleValues(app)
-        XCTAssertEqual(after["hearts"],"3");XCTAssertEqual(after["cooldowns"],"1")
+        XCTAssertEqual(after["hearts"],"3");XCTAssertEqual(after["retired"],"1")
         XCTAssertGreaterThanOrEqual(Int(after["lastJourneyMs"]!)!,800);XCTAssertLessThan(Int(after["lastJourneyMs"]!)!,2200)
     }
     func testKingDominoGeneration() throws {
@@ -924,7 +1139,7 @@ final class CloudChessUITests:XCTestCase {
             puzzleMove(app,"g6g4");puzzleReady(app,timeout:90)
             XCTAssertEqual(puzzleValues(app)["score"],"1000000","No centipawn loss charge in open play")
             XCTAssertEqual(puzzleValues(app)["scoreEvents"],"0")
-            app.buttons["Undo move"].tap();app.buttons["confirm-action"].tap();puzzleReady(app,timeout:90)
+            app.buttons["Undo move"].tap();puzzleReady(app,timeout:90)
             XCTAssertEqual(puzzleValues(app)["score"],"1000000")
             XCTAssertEqual(puzzleValues(app)["scoreEvents"],"0","Undo only reduces the future reward")
             XCTAssertEqual(Double(puzzleValues(app)["reward"]!)!,value*0.8,accuracy:2)
@@ -1116,7 +1331,7 @@ final class CloudChessUITests:XCTestCase {
                 puzzleMove(app,next)
                 let settled=XCTNSPredicateExpectation(predicate:NSPredicate(format:"value CONTAINS %@ AND value CONTAINS %@","ready:1,","evaluating:0,"),object:status)
                 XCTAssertEqual(XCTWaiter.wait(for:[settled],timeout:120),.completed,"Puzzle readiness: \(status.value ?? "missing")")
-                let info=app.buttons["acknowledge-instructions"];if info.exists {info.tap()}
+                dismissInstructions(app)
             }
             let v=puzzleValues(app)
             XCTAssertNotEqual(v["id"],before,"Round \(round) reached the next puzzle")
@@ -1177,43 +1392,12 @@ final class CloudChessUITests:XCTestCase {
             XCTAssertLessThan(bar.frame.maxY,app.buttons["Undo move"].frame.minY,"Evaluation must not overlap bottom controls")
             let shot=XCTAttachment(screenshot:app.screenshot());shot.name="Bottom horizontal evaluation bar - \(side)";shot.lifetime = .keepAlways;add(shot)
             app.buttons["Challenge information"].tap()
-            XCTAssertTrue(app.buttons["acknowledge-instructions"].waitForExistence(timeout:5))
+            XCTAssertTrue(app.descendants(matching:.any)["instruction-panel"].waitForExistence(timeout:5))
             XCTAssertFalse(label.exists,"The instructions popup conceals the evaluation")
-            app.buttons["acknowledge-instructions"].tap();puzzleReady(app)
+            dismissInstructions(app);puzzleReady(app)
             XCTAssertEqual(label.label,side=="even" ? "The position is even":(side=="white" ? "White is winning":"Black is winning"))
             app.terminate()
         }
-    }
-    func testUndoWarningCompoundsRewardAndRewindsOneTurn() throws {
-        continueAfterFailure=false
-        let app=XCUIApplication();app.launchArguments=["--uitesting","--board=6x6","--puzzle-mate=3","--hold-completion","--reduced-motion"];app.launch();puzzleReady(app)
-        let original=puzzleValues(app),value=pow(Double(original["itemRating"]!)!,1.5)
-        XCTAssertFalse(app.buttons["Undo move"].isEnabled,"No charge when there is nothing to undo")
-        for _ in 0..<2 {puzzleMove(app,puzzleValues(app)["next"]!);puzzleReady(app)}
-        XCTAssertEqual(puzzleValues(app)["moves"],"4")
-        app.buttons["Undo move"].tap()
-        XCTAssertTrue(app.staticTexts["Undo your last move?"].waitForExistence(timeout:5))
-        XCTAssertTrue(app.staticTexts.containing(NSPredicate(format:"label CONTAINS %@","20%")).firstMatch.exists)
-        let warning=XCTAttachment(screenshot:app.screenshot());warning.name="Undo warning with exact reduced reward";warning.lifetime = .keepAlways;add(warning)
-        app.buttons["cancel-action"].tap()
-        XCTAssertEqual(puzzleValues(app)["moves"],"4");XCTAssertEqual(puzzleValues(app)["undos"],"0")
-        for index in 1...2 {
-            app.buttons["Undo move"].tap();app.buttons["confirm-action"].tap();puzzleReady(app)
-            XCTAssertEqual(puzzleValues(app)["id"],original["id"])
-            XCTAssertEqual(puzzleValues(app)["moves"],String(4-index*2))
-            XCTAssertEqual(puzzleValues(app)["undos"],String(index))
-            XCTAssertEqual(Double(puzzleValues(app)["reward"]!)!,value*pow(0.8,Double(index)),accuracy:2)
-            XCTAssertEqual(puzzleValues(app)["score"],"0","Undo reduces potential reward, not banked points")
-        }
-        XCTAssertFalse(app.buttons["Undo move"].isEnabled)
-        for _ in 0..<3 {
-            if puzzleValues(app)["completed"]=="1" {break}
-            puzzleMove(app,puzzleValues(app)["next"]!)
-            if puzzleValues(app)["completed"] != "1" {puzzleReady(app)}
-        }
-        XCTAssertEqual(puzzleValues(app)["completed"],"1")
-        XCTAssertEqual(Double(puzzleValues(app)["score"]!)!,value*0.64,accuracy:2)
-        XCTAssertEqual(puzzleValues(app)["error"],"0")
     }
     func testUndoInSixMoveChallenge() throws {
         continueAfterFailure=false
@@ -1221,7 +1405,7 @@ final class CloudChessUITests:XCTestCase {
         let original=puzzleValues(app)
         puzzleMove(app,original["next"]!);puzzleReady(app,timeout:60)
         XCTAssertEqual(puzzleValues(app)["moves"],"2")
-        app.buttons["Undo move"].tap();app.buttons["confirm-action"].tap();puzzleReady(app,timeout:60)
+        app.buttons["Undo move"].tap();puzzleReady(app,timeout:60)
         let undone=puzzleValues(app)
         XCTAssertEqual(undone["moves"],"0");XCTAssertEqual(undone["undos"],"1")
         XCTAssertEqual(undone["id"],original["id"]);XCTAssertEqual(undone["legal"],original["legal"])
@@ -1351,23 +1535,26 @@ final class CloudChessUITests:XCTestCase {
         continueAfterFailure=false
         let app=XCUIApplication();app.launchArguments=["--uitesting","--board=6x6","--puzzle-mate=2"];app.launch();puzzleReady(app)
         let initial=puzzleValues(app)
-        let winning=Set(initial["winning"]!.split(separator:"|").map(String.init))
-        let wrong=initial["legal"]!.split(separator:"|").map(String.init).first{!winning.contains($0)}!
+        puzzleMove(app,initial["next"]!);puzzleReady(app)
+        let current=puzzleValues(app)
+        let winning=Set(current["winning"]!.split(separator:"|").map(String.init))
+        let wrong=current["legal"]!.split(separator:"|").map(String.init).first{!winning.contains($0)}!
         puzzleMove(app,wrong)
         expectation(for:NSPredicate(format:"value CONTAINS %@","mistakes:1,"),evaluatedWith:app.otherElements["puzzle-status"]);waitForExpectations(timeout:15);puzzleReady(app)
         XCTAssertEqual(puzzleValues(app)["id"],initial["id"])
         app.buttons["Hint"].tap();app.buttons["confirm-action"].tap();puzzleReady(app);XCTAssertEqual(puzzleValues(app)["hints"],"1")
         app.terminate();app.launchArguments=["--uitesting","--preserve-coach","--board=6x6","--puzzle-mate=2"];app.launch();puzzleReady(app)
-        XCTAssertNotEqual(puzzleValues(app)["id"],initial["id"],"Returning starts a fresh puzzle")
-        XCTAssertEqual(puzzleValues(app)["completed"],"0","Returning is not a solve")
-        let freshRating=Int(puzzleValues(app)["rating"]!)!
-        puzzleMove(app,puzzleValues(app)["next"]!);puzzleReady(app)
-        puzzleMove(app,puzzleValues(app)["next"]!)
+        let resumed=puzzleValues(app)
+        XCTAssertEqual(resumed["id"],initial["id"],"Returning resumes the admitted puzzle")
+        XCTAssertEqual(resumed["moves"],"2");XCTAssertEqual(resumed["mistakes"],"1");XCTAssertEqual(resumed["hints"],"1")
+        XCTAssertEqual(resumed["completed"],"0","Returning is not a solve")
+        let freshRating=Int(resumed["rating"]!)!
+        puzzleMove(app,resumed["next"]!)
         expectation(for:NSPredicate(format:"value CONTAINS %@","confetti:96,"),evaluatedWith:app.otherElements["puzzle-status"]);waitForExpectations(timeout:12)
         let shot=XCTAttachment(screenshot:app.screenshot());shot.name="Confetti above the clouds";shot.lifetime = .keepAlways;add(shot)
         puzzleReady(app)
         XCTAssertEqual(puzzleValues(app)["completed"],"1")
-        XCTAssertGreaterThan(Int(puzzleValues(app)["rating"]!)!,freshRating,"Solving the fresh unassisted puzzle is positive evidence")
+        XCTAssertLessThanOrEqual(Int(puzzleValues(app)["rating"]!)!,freshRating,"A solve after a lost heart and a hint is not clean mastery")
         app.terminate();app.launchArguments=["--uitesting","--preserve-coach"];app.launch();puzzleReady(app)
         XCTAssertEqual(puzzleValues(app)["completed"],"1","Celebration never double-counts a solve")
         XCTAssertFalse(app.staticTexts["White to solve"].exists)

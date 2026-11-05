@@ -9,6 +9,8 @@ import SceneKit
 struct CloudChessView:View {
     @StateObject private var game=GameModel()
     @ObservedObject private var subscription=SubscriptionStore.shared
+    @ObservedObject private var connectivity=Connectivity.shared
+    @ObservedObject private var ads=GoogleRewardedAds.shared
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.dynamicTypeSize) private var textSize
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -21,8 +23,15 @@ struct CloudChessView:View {
     /// Pale ink for the few HUD glyphs drawn directly on the sky; cards and
     /// popups keep the global ink on their white chrome.
     private var hudInk:Color {game.night ? Color(red:0.93,green:0.96,blue:1):ink}
-    private var modalVisible:Bool {game.showSubscription || settings || showingProfile || showingLegal || game.showInfo || game.showReturn || game.showSkip || game.showUndo || game.showHint || !game.promotion.isEmpty || game.phase=="error"}
+    private var modalVisible:Bool {game.showSubscription || game.showAdBreak || game.showOffline || game.houseAd != nil || settings || showingProfile || showingLegal || game.showInfo || game.showReturn || game.showSkip || game.showHint || !game.promotion.isEmpty || game.phase=="error"}
     private var sceneryPaused:Bool {modalVisible}
+    /// DEBUG tutorial-art captures show only the board (and its material bar).
+    private var captureHUD:Double {
+        #if DEBUG
+        if ProcessInfo.processInfo.arguments.contains("--tutorial-capture") {return 0}
+        #endif
+        return 1
+    }
     var body:some View {
         GeometryReader { geo in
             ZStack {
@@ -39,8 +48,9 @@ struct CloudChessView:View {
                         scoreDisplay
                         Spacer()
                         Button {withAnimation(reduceMotion || !game.motion ? nil:.spring(response:0.4,dampingFraction:0.8)){settings.toggle()}} label:{symbol(settings ? "xmark":"slider.horizontal.3",size:18)}.accessibilityLabel("Settings")
-                    }.foregroundStyle(hudInk).padding(.horizontal,27).padding(.top,18)
-                    challengeCloud.padding(.top,12).padding(.horizontal,22)
+                    }.foregroundStyle(hudInk).padding(.horizontal,27).padding(.top,18).opacity(captureHUD)
+                    // Before any puzzle exists (an ad break or offline card at launch) there is no challenge to describe.
+                    challengeCloud.padding(.top,12).padding(.horizontal,22).opacity(game.puzzle == nil && game.challengeNotice == nil ? 0:captureHUD).accessibilityHidden(game.puzzle == nil && game.challengeNotice == nil)
                     Spacer(minLength:0)
                     
                     if let activity=game.evaluationActivity,!game.isGenerating,!game.showInfo,!game.showReturn {
@@ -53,17 +63,24 @@ struct CloudChessView:View {
                             .accessibilityHidden(game.evaluationPending)
                             .frame(maxWidth:340).padding(.horizontal,24).padding(.bottom,16).allowsHitTesting(false)
                     }
+                    if game.showsMaterialBar,!game.showInfo,!game.showReturn,!game.presentingReward {
+                        MaterialBar(pieceTheme:game.displayedPieces,balance:game.materialBalance,start:game.startingMaterial,solverWhite:game.solverWhite,reducedMotion:reduceMotion || !game.motion)
+                            .frame(maxWidth:340).padding(.horizontal,24).padding(.bottom,16).allowsHitTesting(false)
+                    }
                     if game.challengeKind == .whosWinning,game.puzzle != nil,!game.showInfo,!game.showReturn {
                         JudgmentControls(game:game).padding(.horizontal,22).padding(.bottom,12)
                     }
-                    if game.challengeKind != .whosWinning || game.hasReplay {
+                    if game.undoTip != nil,!modalVisible {
+                        UndoTipToast(dismiss:{game.dismissUndoTip()})
+                            .padding(.horizontal,24).padding(.bottom,10)
+                            .transition(reduceMotion || !game.motion ? .opacity:.move(edge:.bottom).combined(with:.opacity))
+                    }
+                    if game.challengeKind != .whosWinning {
+                    // Undo is free and immediate; a hint confirms its reward cost first.
                     HStack(spacing:0) {
-                        if game.challengeKind != .whosWinning {
-                        control("arrow.counterclockwise","Undo move",disabled:!game.canUndo){game.showUndo=true}
-                        control("sparkles","Hint",disabled:!game.canHint){game.requestHint()}
-                        }
-                        if game.hasReplay {control("play.rectangle","Watch the key moment",disabled:game.busy){Task{await game.watchReplay()}}}
-                    }.padding(.horizontal,12).padding(.vertical,4).background {CloudChromeSurface(puffiness:0.45)}.frame(width:(game.challengeKind == .whosWinning ? 24:144)+(game.hasReplay ? 58:0)).padding(.bottom,32)
+                        control("arrow.counterclockwise","Undo move",disabled:!game.canUndo){Task{await game.undo()}}
+                        control("lightbulb","Hint",disabled:!game.canHint){game.requestHint()}
+                    }.padding(.horizontal,12).padding(.vertical,4).background {CloudChromeSurface(puffiness:0.45)}.frame(width:144).padding(.bottom,32).opacity(captureHUD)
                     }
                 }.overlay(alignment:.bottomTrailing) {
                     Button {game.night.toggle();if game.sound {UISelectionFeedbackGenerator().selectionChanged()}} label:{
@@ -72,7 +89,7 @@ struct CloudChessView:View {
                             .padding(4)
                             .background {CloudChromeSurface(puffiness:0.45)}
                             .contentShape(Circle())
-                    }.padding(.trailing,27).padding(.bottom,32)
+                    }.padding(.trailing,27).padding(.bottom,32).opacity(captureHUD)
                         .accessibilityLabel("Night mode").accessibilityValue(game.night ? "On":"Off")
                         .accessibilityAddTraits(game.night ? .isSelected:[]).accessibilityIdentifier("night-toggle")
                 }.opacity(game.isGenerating || game.journeyActive || game.replayActive ? 0:1).allowsHitTesting(!modalVisible && !game.isGenerating && !game.journeyActive && !game.replayActive && !game.presentingReward).accessibilityHidden(modalVisible || game.isGenerating || game.journeyActive || game.replayActive || game.showInfo || game.showReturn || game.presentingReward)
@@ -106,6 +123,7 @@ struct CloudChessView:View {
                         firstIntroduction:game.firstTypeIntroduction,
                         title:game.challengeTitle,
                         explanation:game.instructionExplanation,
+                        tutorial:TutorialContent.pages(type:game.instructionType,moves:game.puzzle?.solverMoves ?? 1),
                         score:game.liveScore,
                         rewardMultiplier:game.challengeKind.rewardMultiplier,
                         reducedMotion:reduceMotion || !game.motion,
@@ -113,12 +131,21 @@ struct CloudChessView:View {
                         proceed:{Task{if game.showReturn {await game.continueAfterReturn()} else {await game.acknowledgeInstructions()}}}
                     ).transition(.opacity).zIndex(10)
                 }
-                if game.showSkip || game.showUndo || game.showHint {confirmationPanel.zIndex(15)}
-                if game.showSubscription {
-                    UnlimitedPuzzlePanel(store:subscription,waiting:game.waitingForAccess,close:{game.showSubscription=false},continuePlaying:{Task{await game.continueWithAccess()}}).zIndex(20)
+                if game.showSkip || game.showHint {confirmationPanel.zIndex(15)}
+                if game.showAdBreak,let offer=game.adOffer,!game.showSubscription {
+                    AdBreakPanel(offer:offer,busy:game.busy,watch:{kind in Task{await game.watchAdBreak(kind)}},premium:{game.showSubscription=true}).zIndex(16)
                 }
-                if game.waitingForAccess && !game.showSubscription {
-                    VStack { Spacer();Button("Continue playing") {game.showSubscription=true}.buttonStyle(CloudActionStyle()).padding(.bottom,90) }.zIndex(4)
+                if game.showOffline && !game.showSubscription {
+                    OfflinePanel(premium:{game.showSubscription=true},retry:{Task{await game.continueWithAccess()}}).zIndex(16)
+                }
+                if let ad=game.houseAd {
+                    HouseAdView(index:ad.index,count:ad.count,seconds:game.houseAdSeconds,finish:{game.finishHouseAd()},premium:{game.showSubscription=true}).id(ad.id).transition(.opacity).zIndex(18)
+                }
+                if game.showSubscription {
+                    UnlimitedPuzzlePanel(store:subscription,close:{game.showSubscription=false;if subscription.unlimited {Task{await game.continueWithAccess()}}}).zIndex(20)
+                }
+                if game.waitingForAccess && !game.showSubscription && !game.showAdBreak && !game.showOffline && game.houseAd == nil {
+                    VStack { Spacer();Button("Continue playing") {Task{await game.continueWithAccess()}}.buttonStyle(CloudActionStyle()).padding(.bottom,90) }.zIndex(4)
                 }
                 }.accessibilityHidden(game.presentingReward).allowsHitTesting(!game.presentingReward)
                 #if DEBUG
@@ -127,14 +154,17 @@ struct CloudChessView:View {
                 }
                 #endif
             }.foregroundStyle(ink).buttonStyle(CloudPressStyle()).animation(.easeOut(duration:0.18),value:game.showsGeneration)
+            .animation(reduceMotion || !game.motion ? nil:.spring(response:0.4,dampingFraction:0.8),value:game.undoTip)
         }
         .environment(\.cloudMotion,game.motion)
         .statusBarHidden(true)
         .task{game.configureMotion(reduced:reduceMotion);game.configureNight(animated:false);await game.start()}
         // Switching between cards remains one overlay transaction and one save.
         .onChange(of:modalVisible || game.replayActive){_,_ in updateOverlay()}
-        .onChange(of:scenePhase){_,phase in game.setActive(phase == .active);if phase == .active {Task{await subscription.refreshEntitlements()}};if phase == .background {settings=false;showingProfile=false;showingLegal=false;game.showSkip=false;game.showUndo=false;game.showHint=false;game.promotion=[];game.didEnterBackground()};if phase != .active {game.world.onCancelDrag?()};if phase == .background {Task{await OnDeviceProfiles.shared.pause()}}}
+        .onChange(of:scenePhase){_,phase in game.setActive(phase == .active);if phase == .active {Task{await subscription.refreshEntitlements()}};if phase == .background {settings=false;showingProfile=false;showingLegal=false;game.showSkip=false;game.showHint=false;game.promotion=[];game.didEnterBackground()};if phase != .active {game.world.onCancelDrag?()};if phase == .background {Task{await OnDeviceProfiles.shared.pause()}}}
         .onChange(of:game.motion){_,_ in game.configureMotion(reduced:reduceMotion)}
+        .onChange(of:connectivity.online){_,_ in Task{await game.accessConditionsChanged()}}
+        .onChange(of:subscription.unlimited){_,unlimited in if unlimited && game.waitingForAccess && !game.showSubscription {Task{await game.continueWithAccess()}}}
         .onChange(of:reduceMotion){_,_ in game.configureMotion(reduced:reduceMotion)}
     }
     private func updateOverlay() {
@@ -160,7 +190,7 @@ struct CloudChessView:View {
     }
     private var scoreDisplay:some View {
         VStack(spacing:2) {
-            Text(Int(game.liveScore).formatted()).lineLimit(1).minimumScaleFactor(0.65).font(.system(size:26,weight:.semibold,design:.rounded)).monospacedDigit()
+            Text(Int(game.liveScore).formatted()).lineLimit(1).minimumScaleFactor(0.6).font(.system(size:38,weight:.bold,design:.rounded)).monospacedDigit()
                 .foregroundStyle(scoreEmphasis ? (game.scoreDirection>0 ? (game.night ? Color(red:0.45,green:0.85,blue:0.62):Color(red:0.10,green:0.48,blue:0.31)):(game.night ? Color(red:1.0,green:0.50,blue:0.56):Color(red:0.80,green:0.13,blue:0.22))):hudInk)
                 .scaleEffect(scoreEmphasis && !reduceMotion && game.motion ? 1.34:1)
                 .contentTransition(.numericText()).accessibilityIdentifier("live-score")
@@ -174,10 +204,10 @@ struct CloudChessView:View {
                     withAnimation(.easeOut(duration:0.3)){scoreEmphasis=false}
                 }
             HStack(spacing:4) {Image(systemName:"crown.fill");Text(Int(game.coach.scoring?.best ?? 0).formatted()).monospacedDigit()}
-                .font(.system(size:11,weight:.medium)).foregroundStyle(hudInk.opacity(0.6)).padding(.top,4)
+                .font(.system(size:13,weight:.semibold)).foregroundStyle(hudInk.opacity(0.6)).padding(.top,2)
                 .accessibilityElement(children:.ignore).accessibilityLabel("All-time high")
                 .accessibilityValue(Int(game.coach.scoring?.best ?? 0).formatted()).accessibilityIdentifier("all-time-high")
-            if game.challengeKind.usesHearts {
+            if game.challengeKind.usesHearts,game.puzzle != nil {
                 HStack(spacing:7) {ForEach(0..<3) {i in
                     Image(systemName:i<game.coach.remainingHearts ? "heart.fill":"heart")
                         .foregroundStyle(i<game.coach.remainingHearts ? Color(red:0.80,green:0.35,blue:0.40):hudInk.opacity(0.25))
@@ -192,13 +222,21 @@ struct CloudChessView:View {
     private var challengeCloud:some View {
         VStack(spacing:10) {
             HStack(spacing:8) {
-                Text(game.challengeTitle).font(.system(size:16,weight:.medium,design:.rounded)).multilineTextAlignment(.center)
+                Text(game.challengeTitle).font(.system(size:23,weight:.bold,design:.rounded)).multilineTextAlignment(.center)
+                    .lineLimit(2).minimumScaleFactor(0.75).accessibilityAddTraits(.isHeader)
                 Button {game.requestInstructions()} label: {
                     Image(systemName:"info.circle").font(.system(size:17))
                         .frame(width:44,height:44)
                         // A custom button style otherwise hits only the 17pt glyph.
                         .contentShape(Rectangle())
                 }.accessibilityLabel("Challenge information").disabled(game.busy)
+            }
+            if game.challengeKind == .tactics,let p=game.puzzle {
+                HStack(spacing:7) {ForEach(0..<p.solverMoves,id:\.self) {i in
+                    Circle().fill(ink.opacity(i<game.movesUsed ? 0.78:0.16)).frame(width:7,height:7)
+                }}.padding(.top,-2)
+                    .accessibilityElement(children:.ignore).accessibilityLabel("Moves used")
+                    .accessibilityValue("\(game.movesUsed) of \(p.solverMoves)").accessibilityIdentifier("moves-used")
             }
             if let notice=game.challengeNotice {
                 Text(notice).font(.system(size:13)).multilineTextAlignment(.center)
@@ -240,9 +278,10 @@ struct CloudChessView:View {
     private var settingsPanel:some View {
         CloudPopup(title:"Settings",symbol:"slider.horizontal.3",dismiss:{settings=false}) {
             VStack(spacing:10) {
-                menuRow(subscription.unlimited ? "Unlimited puzzles":"Get unlimited puzzles",symbol:"cloud.fill") {settings=false;game.showSubscription=true}
+                menuRow(subscription.unlimited ? "Premium":"Go Premium",symbol:"cloud.fill") {settings=false;game.showSubscription=true}
                 menuRow("Profile analysis",symbol:"person.crop.circle") {settings=false;showingProfile=true}
                 menuRow("Privacy & support",symbol:"hand.raised") {settings=false;showingLegal=true}
+                if ads.privacyOptionsRequired {menuRow("Ad privacy choices",symbol:"checkmark.shield") {settings=false;Task{await ads.presentPrivacyOptions()}}}
                 Divider().padding(.vertical,4)
                 preferenceRow("Sound & haptics",symbol:"speaker.wave.2",value:$game.sound,identifier:"Toggle sound")
                 preferenceRow("Cloud motion",symbol:"wind",value:$game.motion,identifier:"Toggle motion")
@@ -286,21 +325,24 @@ struct CloudChessView:View {
             }
         }
     }
-    private func cancelConfirmation() {game.showSkip=false;game.showUndo=false;game.showHint=false}
+    private func cancelConfirmation() {game.showSkip=false;game.showHint=false}
     private var confirmationPanel:some View {
-        let skip=game.showSkip,hint=game.showHint
-        let title=skip ? "Skip this puzzle?":hint ? game.hintTitle:"Undo your last move?"
-        let message=skip ? "Skipping costs \(Int(ChallengeScore.value(rating:game.puzzle?.rating ?? 400,kind:game.challengeKind)*0.5).formatted()) points—half this puzzle’s value.":hint ? "This hint reduces the puzzle’s reward by 10%, from \(Int(game.puzzleReward).formatted()) to \(Int(game.puzzleReward*0.9).formatted()) points. Your score stays the same.":"This puzzle’s reward will drop 20%, from \(Int(game.puzzleReward).formatted()) to \(Int(game.puzzleReward*0.8).formatted()) points. Each undo reduces the remaining reward again."
-        return CloudPopup(title:title,symbol:skip ? "forward.end":hint ? "sparkles":"arrow.counterclockwise",dismiss:cancelConfirmation) {
-            Text(message).font(.body).foregroundStyle(ink.opacity(0.75)).fixedSize(horizontal:false,vertical:true)
+        let skip=game.showSkip
+        let title=skip ? "Skip this puzzle?":game.hintTitle
+        return CloudPopup(title:title,symbol:skip ? "forward.end":"lightbulb",dismiss:cancelConfirmation) {
+            if skip {
+                Text("Skipping costs \(Int(ChallengeScore.value(rating:game.puzzle?.rating ?? 400,kind:game.challengeKind)*0.5).formatted()) points—half this puzzle’s value.").font(.body).foregroundStyle(ink.opacity(0.75)).fixedSize(horizontal:false,vertical:true)
+            } else {
+                HintCostGraphic(reward:game.puzzleReward,reduced:reduceMotion || !game.motion)
+            }
         } actions: {
             VStack(spacing:8) {
                 Button {
                     cancelConfirmation()
-                    Task{if skip {await game.newGame()}else if hint {await game.hint()}else {await game.undo()}}
-                } label:{Text(skip ? "Skip puzzle":hint ? "Reveal hint":"Undo move").frame(maxWidth:.infinity)}
+                    Task{if skip {await game.newGame()}else {await game.hint()}}
+                } label:{Text(skip ? "Skip puzzle":"Reveal hint").frame(maxWidth:.infinity)}
                     .buttonStyle(CloudActionStyle(destructive:skip)).disabled(game.busy).accessibilityIdentifier("confirm-action")
-                Button(hint ? "Keep thinking":"Keep playing",action:cancelConfirmation).font(.headline).dynamicTypeSize(...DynamicTypeSize.accessibility2).frame(maxWidth:.infinity,minHeight:48).accessibilityIdentifier("cancel-action")
+                Button(skip ? "Keep playing":"Keep thinking",action:cancelConfirmation).font(.headline).dynamicTypeSize(...DynamicTypeSize.accessibility2).frame(maxWidth:.infinity,minHeight:48).accessibilityIdentifier("cancel-action")
             }
         }.accessibilityIdentifier("confirmation-panel")
     }
@@ -377,21 +419,177 @@ private struct HorizontalEvaluationBar:View {
     }
 }
 
+/// Improve in x: the prover's material balance (P1 N3 B3 R5 Q9) against a
+/// marker at the starting balance. Ending above the marker succeeds. No engine
+/// search, so it never dims or waits.
+struct MaterialBar:View {
+    let pieceTheme:Int
+    let balance:Int,start:Int,solverWhite:Bool,reducedMotion:Bool
+    private let ink=Color(red:0.10,green:0.18,blue:0.29)
+    private func whiteShare(_ solver:Int)->Double {0.5+0.48*tanh(Double(solverWhite ? solver:-solver)/8)}
+    private var ahead:Bool {balance>start}
+    var body:some View {
+        GeometryReader {geo in
+            let current=geo.size.width*whiteShare(balance),mark=geo.size.width*whiteShare(start)
+            ZStack(alignment:.leading) {
+                Color(uiColor:CollectionArt.pieceColor(white:false,theme:pieceTheme))
+                Color(uiColor:CollectionArt.pieceColor(white:true,theme:pieceTheme)).frame(width:current)
+                Rectangle().fill(Color(red:0.54,green:0.62,blue:0.69)).frame(width:1).offset(x:current-0.5)
+                Capsule().fill(ahead ? Color(red:0.18,green:0.62,blue:0.38):Color(red:0.95,green:0.70,blue:0.25))
+                    .overlay(Capsule().stroke(.white,lineWidth:1))
+                    .frame(width:4,height:22).position(x:mark,y:geo.size.height/2)
+            }.clipShape(RoundedRectangle(cornerRadius:4))
+                .overlay(RoundedRectangle(cornerRadius:4).stroke(ahead ? Color(red:0.18,green:0.62,blue:0.38).opacity(0.8):ink.opacity(0.20),lineWidth:ahead ? 1.5:1))
+        }.frame(height:16).accessibilityHidden(true)
+            .padding(.horizontal,16).padding(.vertical,12)
+            .background(.ultraThinMaterial,in:RoundedRectangle(cornerRadius:18))
+            .overlay(RoundedRectangle(cornerRadius:18).stroke(.white.opacity(0.65),lineWidth:0.8))
+            .animation(reducedMotion ? nil:.easeInOut(duration:0.45),value:balance)
+            .accessibilityElement(children:.ignore).accessibilityLabel("Material balance")
+            .accessibilityValue(balance>start ? "Up \(balance-start) from the start":balance<start ? "Down \(start-balance) from the start":"Level with the start")
+            .accessibilityIdentifier("material-bar")
+    }
+}
+
+/// Shown after a lost heart when the engine proves no solution remains from here.
+struct UndoTipToast:View {
+    let dismiss:()->Void
+    private let ink=Color(red:0.10,green:0.18,blue:0.29)
+    var body:some View {
+        Button(action:dismiss) {
+            HStack(spacing:12) {
+                Image(systemName:"lightbulb.fill").font(.system(size:20)).foregroundStyle(Color(red:0.98,green:0.72,blue:0.16)).accessibilityHidden(true)
+                Text("Hint: you may want to undo some previous moves!").font(.system(size:16,weight:.semibold,design:.rounded))
+                    .multilineTextAlignment(.leading).fixedSize(horizontal:false,vertical:true)
+                Image(systemName:"arrow.uturn.backward").font(.system(size:15,weight:.bold)).opacity(0.6).accessibilityHidden(true)
+            }.foregroundStyle(ink).padding(.horizontal,18).padding(.vertical,14)
+                .background(.regularMaterial,in:RoundedRectangle(cornerRadius:20))
+                .overlay(RoundedRectangle(cornerRadius:20).stroke(Color(red:0.98,green:0.72,blue:0.16).opacity(0.7),lineWidth:1.2))
+                .shadow(color:ink.opacity(0.16),radius:14,y:6)
+        }.buttonStyle(CloudPressStyle()).frame(maxWidth:400)
+            .dynamicTypeSize(...DynamicTypeSize.accessibility2)
+            .accessibilityLabel("Hint: you may want to undo some previous moves!").accessibilityHint("Dismisses this tip")
+            .accessibilityIdentifier("undo-tip")
+    }
+}
+
+/// The hint's price at a glance: the reward bar loses a 10% slice.
+struct HintCostGraphic:View {
+    let reward:Double,reduced:Bool
+    @State private var cut=false
+    private let ink=Color(red:0.10,green:0.18,blue:0.29)
+    private let keep=Color(red:0.18,green:0.62,blue:0.38),lose=Color(red:0.86,green:0.27,blue:0.33)
+    var body:some View {
+        VStack(spacing:14) {
+            ZStack {
+                Circle().fill(Color(red:1.0,green:0.85,blue:0.40).opacity(0.35)).frame(width:74,height:74)
+                Image(systemName:"lightbulb.max.fill").font(.system(size:36)).symbolRenderingMode(.palette)
+                    .foregroundStyle(Color(red:0.98,green:0.72,blue:0.16),ink.opacity(0.75))
+            }.accessibilityHidden(true)
+            GeometryReader {geo in
+                ZStack(alignment:.leading) {
+                    Capsule().fill(ink.opacity(0.10))
+                    HStack(spacing:2) {
+                        Capsule().fill(keep).frame(width:geo.size.width*0.9-1)
+                        Capsule().fill(lose.opacity(cut ? 0.25:1)).frame(width:geo.size.width*0.1-1)
+                            .offset(y:cut && !reduced ? 10:0).rotationEffect(.degrees(cut && !reduced ? 18:0))
+                    }
+                }
+            }.frame(height:18).accessibilityHidden(true)
+            HStack(spacing:10) {
+                Text(Int(reward).formatted()).strikethrough(cut,color:lose)
+                Image(systemName:"arrow.right").font(.system(size:15,weight:.bold)).accessibilityHidden(true)
+                Text(Int(reward*0.9).formatted()).foregroundStyle(keep)
+                Text("−10%").font(.system(size:15,weight:.bold,design:.rounded)).foregroundStyle(.white)
+                    .padding(.horizontal,8).padding(.vertical,3).background(lose,in:Capsule())
+            }.font(.system(size:20,weight:.bold,design:.rounded)).monospacedDigit().foregroundStyle(ink)
+                .accessibilityElement(children:.ignore).accessibilityLabel("This puzzle’s reward drops 10%, from \(Int(reward).formatted()) to \(Int(reward*0.9).formatted()) points. Your score stays the same.")
+                .accessibilityIdentifier("hint-cost")
+        }.frame(maxWidth:.infinity).padding(.vertical,4)
+            .onAppear {withAnimation(reduced ? nil:.spring(response:0.55,dampingFraction:0.6).delay(0.35)){cut=true}}
+    }
+}
+
+/// One illustrated step of a puzzle type's introduction. Images are real
+/// renders of the app's board with arrows (scripts/build_tutorial_art.swift).
+struct TutorialPage:Identifiable {
+    let id:Int,image:String,title:String,text:String
+}
+enum TutorialContent {
+    static func pages(type:String,moves:Int)->[TutorialPage]? {
+        let movesText=moves==1 ? "1 move":"\(moves) moves"
+        let undo=TutorialPage(id:2,image:"tutorial-undo",title:"Undo to find the way",
+            text:"To succeed, you may need to undo moves. Undo takes back your move and the reply so you can try another path. Undo is free; each hint lowers this puzzle’s reward.")
+        switch type {
+        case "mate":return [
+            TutorialPage(id:0,image:"tutorial-mate-goal",title:"Mate in \(moves)",
+                text:"Checkmate the king within \(movesText). Your opponent defends after each of your moves."),
+            TutorialPage(id:1,image:"tutorial-mate-hearts",title:"Three hearts",
+                text:"A wrong move doesn’t end the puzzle. You lose a heart only when you’ve used \(movesText) without checkmate. Lose all three and the puzzle ends."),
+            undo]
+        case "improvement":return [
+            TutorialPage(id:0,image:"tutorial-improve-goal",title:"Improve position in \(moves)",
+                text:"Within \(movesText), come out ahead: win more material than you give up. Your opponent defends after each of your moves."),
+            TutorialPage(id:1,image:"tutorial-improve-bar",title:"Finish above the marker",
+                text:"The bar shows the material balance and the marker shows where you started. If you finish at or below it, you lose a heart. Lose all three and the puzzle ends."),
+            undo]
+        default:return nil
+        }
+    }
+}
+
 /// A compact modal retains the board context and blocks underlying input.
 struct ChallengeIntermission:View {
     let returning:Bool,firstIntroduction:Bool
     let title:String,explanation:String
+    var tutorial:[TutorialPage]?=nil
     let score:Double
     var rewardMultiplier:Double=1
     let reducedMotion:Bool,busy:Bool
     let proceed:()->Void
     @State private var appeared=false
+    @State private var page=0
     private let ink=Color(red:0.10,green:0.18,blue:0.29)
+    private var lastPage:Bool {page>=(tutorial?.count ?? 1)-1}
     var body:some View {
         GeometryReader {geo in
             ZStack {
                 ink.opacity(0.28).ignoresSafeArea().contentShape(Rectangle())
                 VStack(spacing:0) {
+                    if let tutorial,!returning {
+                        Text(firstIntroduction ? "The next puzzle is…":"How to play")
+                            .font(.system(size:16,weight:.medium,design:.rounded)).foregroundStyle(ink.opacity(0.65)).padding(.top,20)
+                            .accessibilityIdentifier(firstIntroduction ? "first-instruction-notice":"instruction-heading")
+                        TabView(selection:$page) {
+                            ForEach(tutorial) {step in
+                                ScrollView {
+                                    VStack(spacing:12) {
+                                        Image(step.image).resizable().scaledToFit()
+                                            .clipShape(RoundedRectangle(cornerRadius:14))
+                                            .padding(12)
+                                            .frame(maxWidth:.infinity).frame(height:min(250,geo.size.height*0.32))
+                                            .background(.white.opacity(0.55),in:RoundedRectangle(cornerRadius:22))
+                                            .overlay(RoundedRectangle(cornerRadius:22).stroke(.white.opacity(0.85),lineWidth:1))
+                                            .padding(.horizontal,4)
+                                            .accessibilityHidden(true)
+                                        Text(step.title).font(.title2.weight(.semibold)).accessibilityAddTraits(.isHeader)
+                                        Text(step.text).font(.body).lineSpacing(3).fixedSize(horizontal:false,vertical:true)
+                                            .accessibilityIdentifier(step.id==0 ? "challenge-explanation":"tutorial-step-\(step.id)")
+                                    }.multilineTextAlignment(.center).padding(.horizontal,24).padding(.top,10).padding(.bottom,8)
+                                }.scrollIndicators(.hidden).scrollBounceBehavior(.basedOnSize).tag(step.id)
+                            }
+                        }.tabViewStyle(.page(indexDisplayMode:.never)).frame(height:min(440,geo.size.height*0.58))
+                        HStack(spacing:8) {ForEach(tutorial) {step in
+                            Circle().fill(ink.opacity(step.id==page ? 0.75:0.18)).frame(width:7,height:7)
+                        }}.accessibilityElement(children:.ignore).accessibilityLabel("Page").accessibilityValue("\(page+1) of \(tutorial.count)")
+                        Button {
+                            if lastPage {proceed()} else {withAnimation(reducedMotion ? nil:.easeInOut(duration:0.25)){page+=1}}
+                        } label: {
+                            HStack(spacing:12) {Text(lastPage ? "Got it!":"Next");Image(systemName:"arrow.right")}
+                                .font(.system(size:17,weight:.semibold,design:.rounded)).frame(maxWidth:.infinity).padding(.vertical,17)
+                                .background(ink,in:Capsule()).foregroundStyle(.white)
+                        }.disabled(busy).opacity(busy ? 0.5:1).accessibilityIdentifier(lastPage ? "acknowledge-instructions":"tutorial-next").padding(22)
+                    } else {
                     ScrollView {
                         VStack(spacing:geo.size.height<720 ? 13:18) {
                             Image(systemName:returning ? "cloud.sun.fill":"cloud.fill")
@@ -417,6 +615,7 @@ struct ChallengeIntermission:View {
                             .font(.system(size:17,weight:.semibold,design:.rounded)).frame(maxWidth:.infinity).padding(.vertical,17)
                             .background(ink,in:Capsule()).foregroundStyle(.white)
                     }.disabled(busy).opacity(busy ? 0.5:1).accessibilityIdentifier(returning ? "continue-session":"acknowledge-instructions").padding(22)
+                    }
                 }.frame(width:min(440,geo.size.width-36))
                     .modifier(CloudCardSurface())
                     .scaleEffect(appeared ? 1:0.96).opacity(appeared ? 1:0)

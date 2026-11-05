@@ -91,6 +91,7 @@ enum NativeChess {
     private static let backgroundQueue=DispatchQueue(label:"CloudChess.Preparation",qos:.utility)
     private static let stateQueue=DispatchQueue(label:"CloudChess.Position",qos:.userInitiated,attributes:.concurrent)
     private static let puzzleQueue=DispatchQueue(label:"CloudChess.PuzzleProof",qos:.userInitiated)
+    private static let profileQueue=DispatchQueue(label:"CloudChess.ProfileAnalysis",qos:.utility)
     private static let cache:NSCache<NSString,NSDictionary> = {let c=NSCache<NSString,NSDictionary>();c.countLimit=192;c.totalCostLimit=8*1024*1024;return c}()
     private static let activityLock=NSLock()
     private static var playing=false
@@ -99,19 +100,18 @@ enum NativeChess {
         activityLock.lock();let becameActive=active && !playing;playing=active;activityLock.unlock()
         if becameActive {CCStopBackground()}
     }
-    /// Imported-game analysis yields to live play rather than occupying the
-    /// foreground Stockfish queue. Cancellation retries from the saved move.
+    /// Imported-game analysis runs on its own serial utility lane while the
+    /// app is open, including during play: tactical puzzles use the separate
+    /// prover, so neither cancels the other, and next-puzzle preparation never
+    /// queues behind it. Stockfish searches stay serialized by the bridge.
+    /// It waits out Low Power Mode and serious heat; budgets are unchanged.
     static func profileCall(_ request:[String:Any]) async throws->[String:Any] {
-        while true {
-            try Task.checkCancellation()
-            while gameplayActive {try await Task.sleep(nanoseconds:250_000_000)}
-            let epoch=CCBackgroundEpoch()
-            do {return try await $backgroundEpoch.withValue(epoch) {try await call(request)}}
-            catch is CancellationError {
-                try Task.checkCancellation()
-                try await Task.sleep(nanoseconds:150_000_000)
-            }
+        while ProcessInfo.processInfo.isLowPowerModeEnabled || ProcessInfo.processInfo.thermalState.rawValue>=2 {
+            try Task.checkCancellation();try await Task.sleep(nanoseconds:2_000_000_000)
         }
+        try Task.checkCancellation()
+        var lane=request;lane["_lane"]="profile"
+        return try await call(lane)
     }
     // Mutable flight fields are exclusively protected by flightLock.
     private final class Flight: @unchecked Sendable {
@@ -163,8 +163,11 @@ enum NativeChess {
             }
         }
     }
-    private static func perform(_ request:[String:Any]) async throws -> [String:Any] {
-        let epoch=backgroundEpoch
+    private static func perform(_ input:[String:Any]) async throws -> [String:Any] {
+        // The lane marker never enters search identity or persisted evidence keys.
+        let profileLane=input["_lane"] as? String=="profile"
+        var request=input;request.removeValue(forKey:"_lane")
+        let epoch=profileLane ? nil:backgroundEpoch
         if let epoch,epoch != CCBackgroundEpoch() {throw CancellationError()}
         let action=request["action"] as? String ?? "state"
         let positionOnly=action=="puzzle" && (request["operation"] as? String ?? "position")=="position"
@@ -181,11 +184,11 @@ enum NativeChess {
                existing.epoch==nil || (existing.epoch==CCBackgroundEpoch() && (existing.started || epoch != nil)) {
                 existing.waiters.append(continuation);joinedSearches+=1;flightLock.unlock();return
             }
-            if searches && epoch==nil {CCStopBackground()}
+            if searches && epoch==nil && !profileLane {CCStopBackground()}
             let flight=Flight(request,epoch:epoch);flight.waiters=[continuation]
             if let key {flights[key]=flight}
             flightLock.unlock()
-            let worker = !searches ? stateQueue:(epoch != nil ? backgroundQueue:(action=="puzzle" ? puzzleQueue:queue))
+            let worker = !searches ? stateQueue:(profileLane ? profileQueue:(epoch != nil ? backgroundQueue:(action=="puzzle" ? puzzleQueue:queue)))
             worker.async {
                 var outcome:Result<[String:Any],Error>
                 if let epoch,epoch != CCBackgroundEpoch() {outcome = .failure(CancellationError())}
@@ -322,6 +325,10 @@ struct NativePGN {
     }
 }
 
+struct ProfileHTTPStatus:LocalizedError {
+    let code:Int
+    var errorDescription:String? {code==404 || code==410 ? "That username wasn’t found. Check the spelling and the site.":"Profile download returned \(code)"}
+}
 actor OnDeviceProfiles {
     static let shared=OnDeviceProfiles()
     private var archive:NativeProfileStore?
@@ -508,7 +515,7 @@ actor OnDeviceProfiles {
             guard attempt<5 else{throw profileError("Provider is busy. Resume later.")}
             return max(response.statusCode==429 ? 60:2,Double(response.value(forHTTPHeaderField:"Retry-After") ?? "") ?? pow(2,Double(attempt)))
         }
-        guard response.statusCode==200 else {throw profileError("Profile download returned \(response.statusCode)")}
+        guard response.statusCode==200 else {throw ProfileHTTPStatus(code:response.statusCode)}
         return nil
     }
     /// Streaming is reserved for the Lichess NDJSON export, consumed line by line.
@@ -608,7 +615,10 @@ actor OnDeviceProfiles {
                     if received>=limit || archives.count>=months {truncated=true;break}
                     guard archive.hasPrefix(root),archive.dropFirst(root.count).range(of:#"^\d{4}/\d{2}$"#,options:.regularExpression) != nil else{throw profileError("Invalid archive URL")}
                     if archives.contains(archive) {continue}
-                    let page=try await fetchJSON(URL(string:archive)!)
+                    let page:[String:Any]
+                    // Chess.com occasionally fails a single month (404/410): skip it.
+                    do {page=try await fetchJSON(URL(string:archive)!)}
+                    catch let status as ProfileHTTPStatus where status.code==404 || status.code==410 {archives.append(archive);continue}
                     for game in (page["games"] as? [[String:Any]] ?? []).sorted(by:{($0["end_time"] as? Double ?? 0)>($1["end_time"] as? Double ?? 0)}) {
                         if received>=limit{break};try await accept(game)
                         if received%10==0 {job=try update(job,"importing",["received":received,"skipped":skipped])}
@@ -622,29 +632,47 @@ actor OnDeviceProfiles {
             job=try publishReport(account,job:job,status:"analysing")
             }
             job=try update(job,"analysing")
-            for key in try store().identifiers("game",account) {
+            // Only the player's own decisions inform the report and drills, so
+            // opponent moves are not searched. Newest games come first, and the
+            // report refreshes every few decisions instead of once per game.
+            let keys=try store().identifiers("game",account)
+            var total=0
+            for key in keys {
+                guard let game=try store().get("game",key) else{continue}
+                total+=Self.playerPlies(game).count
+            }
+            var done=0,sincePublish=0,lastPublish=Date()
+            func publishIfDue(force:Bool=false)throws {
+                guard force || sincePublish>=8 || (sincePublish>0 && Date().timeIntervalSince(lastPublish)>=45) else{return}
+                job=try publishReport(account,job:job,status:"analysing",extra:["analysedGames":try store().count("complete",account),"decisionsDone":done,"decisionsTotal":total])
+                sincePublish=0;lastPublish=Date()
+            }
+            for key in keys {
                 try check();guard let game=try store().get("game",key) else{continue}
-                let hash=try fingerprint([config,game] as [Any]);if try store().get("complete",key)?["hash"] as? String==hash {continue}
+                let plies=Self.playerPlies(game)
+                let hash=try fingerprint([config,game] as [Any]);if try store().get("complete",key)?["hash"] as? String==hash {done+=plies.count;continue}
                 // Rebuild only derived opportunities for this game. Raw moves
                 // remain intact, and resumed evidence recreates drills below.
                 try store().removeDerivedDrills(account:account,source:game["id"] as! String)
                 let moves=game["moves"] as! [String]
-                
-                for i in 0..<moves.count {
+                for i in plies {
                     try check();let eid=hash+":"+String(i)
                     if let saved=try store().get("move",eid) {
                         if let drill=Self.drill(saved,game:game,id:eid) {try store().put("drill",eid,account,drill,stamp:game["ended"] as! Double)}
-                        continue
+                        done+=1;continue
                     }
+                    // A single legal reply is no decision; skip it without a search.
+                    let position=try await NativeChess.call(["action":"state","initial":game["initial"] as! String,"moves":Array(moves.prefix(i))])
+                    if (position["legal"] as? [String])?.count ?? 2<=1 {done+=1;continue}
                     let evidence=try await analyse(game,index:i)
                     try check();try store().put("move",eid,hash,evidence,stamp:Double(i))
                     if let drill=Self.drill(evidence,game:game,id:eid) {try store().put("drill",eid,account,drill,stamp:game["ended"] as! Double)}
-                    job=try update(job,"analysing",["game":game["id"]!,"ply":i+1,"analysedGames":try store().count("complete",account)])
+                    done+=1;sincePublish+=1
+                    job=try update(job,"analysing",["game":game["id"]!,"ply":i+1,"analysedGames":try store().count("complete",account),"decisionsDone":done,"decisionsTotal":total])
+                    try publishIfDue()
                 }
                 try store().put("complete",key,account,["hash":hash],stamp:game["ended"] as! Double)
-                // Each finished game refreshes the visible report while the
-                // remaining games are still being analysed at full budget.
-                job=try publishReport(account,job:job,status:"analysing",extra:["analysedGames":try store().count("complete",account)])
+                try publishIfDue(force:true)
             }
             try check();job=try update(job,"modelling")
             _=try publishReport(account,job:job,status:"completed",extra:["error":NSNull()])
@@ -654,6 +682,12 @@ actor OnDeviceProfiles {
             let transient=(error as? URLError).map{[.timedOut,.notConnectedToInternet,.networkConnectionLost].contains($0.code)} ?? false
             _=try? update(job,paused ? "cancelled":transient ? "interrupted":"failed",["error":paused || transient ? "Paused. Resume from the saved checkpoint.":error.localizedDescription,"userPaused":pausedByUser])
         }
+    }
+    /// Plies where the imported player is to move.
+    static func playerPlies(_ game:[String:Any])->[Int] {
+        let moves=game["moves"] as? [String] ?? [],whiteFirst=((game["initial"] as? String ?? "").split(separator:" ").dropFirst().first ?? "w")=="w"
+        let white=(game["color"] as? String)=="white"
+        return moves.indices.filter{($0%2==0)==(whiteFirst==white)}
     }
     private func publishReport(_ account:String,job:[String:Any],status:String,extra:[String:Any]=[:])throws->[String:Any] {
         let report=try buildReport(account,job:job)
@@ -709,8 +743,8 @@ actor OnDeviceProfiles {
         var games:[[String:Any]]=[],sample:[[String:Any]]=[],total=0,allMoves=0,mistakes=0,deep=0
         try store().each("game",account){game in
             games.append(game.filter{!["moves","clocks"].contains($0.key)})
-            let key=account+":"+(game["id"] as! String)
-            guard let complete=try store().get("complete",key),let hash=complete["hash"] as? String else{return}
+            // Partial games count: evidence is keyed by this game's content hash.
+            let hash=try fingerprint([config,game] as [Any])
             try store().each("move",hash){evidence in
                 allMoves+=1
                 guard evidence["playerDecision"] as? Bool != false else{return}

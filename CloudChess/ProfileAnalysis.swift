@@ -8,6 +8,13 @@ struct ProfileJob:Decodable {
     let report:String?
     let userPaused:Bool?
     let received:Int?
+    let decisionsDone:Int?
+    let decisionsTotal:Int?
+    /// Share of the player's decisions analysed, once the import has finished.
+    var progress:Double? {
+        guard let total=decisionsTotal,total>0 else{return nil}
+        return min(1,Double(decisionsDone ?? 0)/Double(total))
+    }
 }
 struct ProfileReport:Codable {
     struct Coverage:Codable {let importedGames:Int;let analysedGames:Int;let completeGameDecisions:Int}
@@ -60,6 +67,7 @@ struct ProfileReport:Codable {
     /// Spoken progress only; the panel itself stays free of counts.
     var spokenState:String {
         if error==nil,job?.status=="importing",let received=job?.received,received>0 {return "importing, \(received) games received"}
+        if error==nil,job?.status=="analysing",let progress=job?.progress {return "analysing, \(Int(progress*100)) percent of your decisions"}
         return error ?? state
     }
 
@@ -239,8 +247,20 @@ struct ProfileAnalysisPanel:View {
                         .disabled(model.running).accessibilityLabel("Paste username").accessibilityHint("Paste your username, then choose Analyse.")
                 }.padding(.horizontal,12).background(.white.opacity(0.8),in:RoundedRectangle(cornerRadius:16))
                 if model.running {
-                    HStack(spacing:12) {ProgressView();Text("Analysing your games…").font(.subheadline);Spacer()}
-                    Text("You can close this panel. Analysis resumes when you’re away from the board.").font(.footnote).foregroundStyle(ink.opacity(0.65))
+                    VStack(alignment:.leading,spacing:10) {
+                        HStack(spacing:12) {ProgressView();Text(model.job?.status=="importing" ? "Downloading your games…":"Analysing your games…").font(.subheadline);Spacer()}
+                        if let progress=model.job?.progress {
+                            GeometryReader {geo in
+                                ZStack(alignment:.leading) {
+                                    Capsule().fill(ink.opacity(0.10))
+                                    Capsule().fill(ink.opacity(0.65)).frame(width:max(8,geo.size.width*progress))
+                                }
+                            }.frame(height:8).animation(reduceMotion || !motion ? nil:.easeOut(duration:0.4),value:progress)
+                                .accessibilityElement().accessibilityLabel("Analysis progress").accessibilityValue("\(Int(progress*100)) percent")
+                                .accessibilityIdentifier("profile-progress")
+                        }
+                        Text("Results appear below and refine as more moves are analysed. You can close this panel and keep playing while the app is open.").font(.footnote).foregroundStyle(ink.opacity(0.65)).fixedSize(horizontal:false,vertical:true)
+                    }
                 }
                 if let error=model.error {
                     Label(error,systemImage:"exclamationmark.circle").font(.callout).foregroundStyle(Color(rgb:0xA83B4E)).fixedSize(horizontal:false,vertical:true).accessibilityIdentifier("profile-error")
@@ -259,7 +279,9 @@ struct ProfileAnalysisPanel:View {
                 }
             }
         }.foregroundStyle(ink).accessibilityIdentifier("profile-panel")
-            .onAppear{model.open()}.onDisappear{model.stopWatching()}
+            .onAppear{model.open()}.onDisappear{model.stopWatching();UIApplication.shared.isIdleTimerDisabled=false}
+            // Keep the screen awake while the panel shows a running analysis.
+            .onChange(of:model.running,initial:true){_,running in UIApplication.shared.isIdleTimerDisabled=running}
             // Inactivity (auto-lock, Control Center) keeps the job and the watch alive; only backgrounding pauses.
             .onChange(of:scenePhase){_,phase in if phase == .active {model.open()} else if phase == .background {model.stopWatching();Task{await OnDeviceProfiles.shared.pause()}}}
     }

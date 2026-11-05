@@ -1,5 +1,16 @@
 # CloudChess Unlimited — monetization branch
 
+> **November 4, 2026: superseded in part.** Free play no longer has an hourly
+> quota. After an 8-puzzle/10-minute introduction, free players choose a short
+> rewarded ad or a three-ad set to unlock a pace-sized batch (3–8 or 15–20
+> puzzles). Free play is blocked while offline. Premium adds an annual plan
+> (`com.maroon.CloudChess.unlimited.annual`, $59.99, "Save 37%" vs monthly) and
+> free trials (monthly 7 days, annual 1 month). No ad SDK is linked yet; no-fill
+> shows a Premium house ad. App Store Connect setup for the annual product and
+> trials is still to do. Full design, research, open items and verification:
+> [docs/PLAY_ON_AND_ADS.md](../docs/PLAY_ON_AND_ADS.md). The rolling-quota text
+> below is historical.
+
 Digital puzzle access uses Apple's StoreKit 2 auto-renewable subscriptions (not
 Apple Pay). Product `com.maroon.CloudChess.unlimited.monthly` belongs to group
 22452898, App Store Connect product 6820353989. The US base price is $7.99/month;
@@ -40,7 +51,7 @@ catalog is copied only into the UI-test bundle, never the distributed app.
 
 ## Reproduce tests
 
-`swiftc -O -parse-as-library CloudChess/PuzzleAllowance.swift scripts/test_puzzle_allowance.swift -o /tmp/cloudchess-allowance && /tmp/cloudchess-allowance`
+`swiftc -O -parse-as-library CloudChess/PuzzleAllowance.swift scripts/test_ad_allowance.swift -o /tmp/cloudchess-allowance && /tmp/cloudchess-allowance` (the rolling-quota test was replaced by the ad-allowance test)
 
 The shared `CloudChess-StoreKit` scheme and `CloudChess.xctestplan` exercise the
 free quota, saved-puzzle resume, purchase/restoration/expiry, pending approval and

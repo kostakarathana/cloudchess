@@ -105,6 +105,11 @@ struct Search {
   }
   memo.emplace(std::move(k),result);return result;
  }
+ // force()'s own ordering: looking up the reply an AND node stopped at is a memo hit.
+ static vector<Move> ordered(const Board&b){auto moves=b.legal();
+  stable_sort(moves.begin(),moves.end(),[&](Move a,Move c){
+   auto priority=[&](Move m){Board next=b.push(m);return (next.check(next.turn)?100:0)+abs(b.p[m.b])*10+m.prom;};return priority(a)>priority(c);
+  });return moves;}
  vector<Move> winners(const Board&b,int depth){vector<Move> out;for(auto m:b.legal())if(force(b.push(m),depth-1))out.push_back(m);return out;}
  int distance(const Board&b,int maxdepth){auto moves=b.legal();if(moves.empty())return b.turn!=attacker&&b.check(b.turn)?0:-1;
   for(int d=(b.turn==attacker?1:2);d<=maxdepth;d+=2)if(force(b,d))return d;return -1;

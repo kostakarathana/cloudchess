@@ -101,7 +101,11 @@ struct TrainingPuzzle:Codable,Identifiable {
         rating=r;uncertainty=u;complexity=c;seconds=t;difficultyVersion="challenge-v2";botSuccess=success
     }
     func request(_ operation:String="position",moves:[String]=[])->[String:Any] {
-        ["action":kind == .tactics ? "puzzle":"state","operation":operation,"initial":fen,"columns":columns,"rows":rows,"mate":mate,"gain":gain,"plies":plies,"moves":moves]
+        var request:[String:Any]=["action":kind == .tactics ? "puzzle":"state","operation":operation,"initial":fen,"columns":columns,"rows":rows,"mate":mate,"gain":gain,"plies":plies,"moves":moves]
+        // Improve-in-x succeeds on ANY net material gain at the horizon; the
+        // certified objective and every proof still use the full `gain`.
+        if kind == .tactics,mate==0 {request["successGain"]=1}
+        return request
     }
 }
 
@@ -144,6 +148,9 @@ struct PuzzleSession:Codable {
     var hintPosition:String?
     var hintStage:Int?
     var hintDiscounts:Int?
+    /// History index of the first learner move the all-defenses proof rejected.
+    /// Play continues from it; only the horizon decides a heart. Undo past it clears it.
+    var offTrack:Int?
     var nextHintStage:Int {hintPosition==moves.joined(separator:" ") ? min(3,max(0,hintStage ?? 0))+1:1}
     mutating func revealHint() {
         let stage=nextHintStage
@@ -151,7 +158,8 @@ struct PuzzleSession:Codable {
         hintPosition=moves.joined(separator:" ");hintStage=stage
         hintDiscounts=min(10000,max(0,hintDiscounts ?? 0)+1);hints+=1
     }
-    var reward:Double {ChallengeScore.value(rating:puzzle.rating,kind:puzzle.kind)*(reattempt == true ? 0.5:1)*pow(0.8,Double(max(0,undoCount ?? 0)))*pow(0.9,Double(max(0,hintDiscounts ?? 0)))}
+    /// Undo is free; only hints discount the success reward (×0.9 each).
+    var reward:Double {ChallengeScore.value(rating:puzzle.rating,kind:puzzle.kind)*(reattempt == true ? 0.5:1)*pow(0.9,Double(max(0,hintDiscounts ?? 0)))}
     @discardableResult mutating func undoLastDecision()->Bool {
         guard !moves.isEmpty,succeeded != true else{return false}
         // A failed, settled attempt can be tried again without recharging its
@@ -159,9 +167,16 @@ struct PuzzleSession:Codable {
         if recorded {id=UUID().uuidString;recorded=false;succeeded=nil;mistakes=0;extraPenalty=nil}
         moves.removeLast(moves.count%2==0 ? 2:1)
         if let injected=blunderPly,moves.count<injected {blunderPly=nil}
+        if let off=offTrack,moves.count<=off {offTrack=nil}
         undoCount=min(10000,max(0,undoCount ?? 0))+1
         hints+=1
         return true
+    }
+    /// After a lost heart the horizon turn is taken back for free: no undo
+    /// discount, no assistance, so the player can try another final move.
+    mutating func rewindMissedTurn() {
+        moves.removeLast(min(moves.count,moves.count%2==0 ? 2:1))
+        if let off=offTrack,moves.count<=off {offTrack=nil}
     }
     var instructionType:String {puzzle.kind == .tactics ? (puzzle.mate>0 ? "mate":"improvement"):puzzle.kind.rawValue}
 
@@ -235,6 +250,20 @@ struct AdaptivePuzzleCoach:Codable {
     var recentPuzzleKeys:[[String]]?
     /// nil in older saves. Pruned and extended only by `finish`; selection reads it.
     var failureCooldowns:[PuzzleCooldown]?
+    /// Failed, lost or skipped tactical sources never return in any reflected or
+    /// recomposed form; the tag skills carry the weakness instead. Bounded by the
+    /// bank's source count (one key per source).
+    var retiredPuzzleKeys:Set<String>?
+    /// "Undo some previous moves" tips: every proven-unsolvable lost heart is an
+    /// event; the first three show, then one every 2–3 events (seeded, persisted).
+    var undoTips:UndoTipSchedule?
+    struct UndoTipSchedule:Codable,Equatable {var events=0,shown=0;var next:Int?}
+    mutating func noteUnsolvableMiss()->Bool {
+        var tips=undoTips ?? UndoTipSchedule();tips.events+=1
+        let show=tips.events<=3 || tips.events>=(tips.next ?? tips.events)
+        if show {tips.shown+=1;if tips.events>=3 {tips.next=tips.events+2+Int(nextRandom()%2)}}
+        undoTips=tips;return show
+    }
     var judgmentDraws:Int?
     var adaptationVersion:String?
     var modeSkills:[String:PuzzleAbility]?
@@ -290,9 +319,24 @@ struct AdaptivePuzzleCoach:Codable {
     func cooldownKeys(now:Double=Date().timeIntervalSince1970)->Set<String> {
         Set(activeCooldowns(now:now).flatMap{$0.keys})
     }
-    func blockedPuzzleKeys(now:Double)->Set<String> {recencyPuzzleKeys.union(cooldownKeys(now:now))}
+    func blockedPuzzleKeys(now:Double)->Set<String> {recencyPuzzleKeys.union(cooldownKeys(now:now)).union(retiredPuzzleKeys ?? [])}
     var blockedPuzzleKeys:Set<String> {blockedPuzzleKeys(now:Date().timeIntervalSince1970)}
-    func allowsNextPuzzle(_ p:TrainingPuzzle,now:Double)->Bool {p.repeatKeys.isDisjoint(with:blockedPuzzleKeys(now:now))}
+    func retired(_ p:TrainingPuzzle)->Bool {!(retiredPuzzleKeys.map{p.repeatKeys.isDisjoint(with:$0)} ?? true)}
+    static func retirementKeys(_ p:TrainingPuzzle)->Set<String> {
+        let source=p.repeatKeys.filter{$0.hasPrefix("tactical-source:")}
+        return source.isEmpty ? p.repeatKeys:source
+    }
+    /// Older saves: their cooldowns and failure reviews were failures too.
+    mutating func retireRecordedFailures() {
+        guard retiredPuzzleKeys==nil else{return}
+        var keys=Set<String>()
+        for c in failureCooldowns ?? [] {keys.insert("tactical-source:"+c.source)}
+        let failed=Set(attempts.filter{$0.kind ?? .tactics == .tactics && $0.skipped}.map{$0.puzzle})
+        for r in reviews where failed.contains(r.puzzle.id) {keys.formUnion(Self.retirementKeys(r.puzzle))}
+        retiredPuzzleKeys=keys;failureCooldowns=nil
+        reviews.removeAll{!$0.puzzle.repeatKeys.isDisjoint(with:keys)}
+    }
+    func allowsNextPuzzle(_ p:TrainingPuzzle,now:Double)->Bool {p.repeatKeys.isDisjoint(with:recencyPuzzleKeys.union(cooldownKeys(now:now))) && !retired(p)}
     func allowsNextPuzzle(_ p:TrainingPuzzle)->Bool {allowsNextPuzzle(p,now:Date().timeIntervalSince1970)}
     /// Two consecutive totals per period so the alternating family always
     /// gets one review slot; prepared handoffs yield on the same slots.
@@ -358,6 +402,7 @@ struct AdaptivePuzzleCoach:Codable {
         return 0.67
     }
     mutating func migrateDifficulty() {
+        retireRecordedFailures()
         // Retain history, frozen points and opponent when upgrading an active drill.
         if session?.puzzle.kind == .tenMoves {session?.puzzle.plies=ImprovementChallenge.plies}
 
@@ -397,8 +442,9 @@ struct AdaptivePuzzleCoach:Codable {
             bank.filter{focusedSelection!.matches($0) && $0.repeatKeys.isDisjoint(with:blocked) && (preferredColumns==nil || ($0.columns==preferredColumns && $0.rows==preferredRows))}
         }
         var eligible=stratum(blocked)
-        // Starvation guard: a thin stratum relaxes failure cooldowns only,
-        // never the last-three/current-session exclusion or the frozen draw.
+        // Starvation guard: a thin stratum (some shapes have 32 sources) may
+        // reuse retired sources, ranked after every other, but never relaxes the
+        // last-three/current-session exclusion or the frozen draw.
         if eligible.count<8 {blocked=recencyPuzzleKeys;eligible=stratum(blocked)}
         let recent=Set(seen.suffix(4000)),recentSources=Set(attempts.suffix(12).map{$0.source ?? $0.puzzle.components(separatedBy:"-")[0]})
         let lastFamily=attempts.last?.family,seed=nextRandom()
@@ -434,6 +480,7 @@ struct AdaptivePuzzleCoach:Codable {
             let mismatch=abs(log(bounded/(1-bounded))-targetLogOdds)/4
             var score=mismatch-0.12*focus-0.025*uncertainty
             if recent.contains(id){score+=2}
+            if retired(p){score+=6}
             if recentSources.contains(base.source){score+=0.6}
             if lastFamily==p.family {score+=0.055}
             // Gentle seeded variety among equally appropriate exercises.
@@ -497,27 +544,15 @@ struct AdaptivePuzzleCoach:Codable {
         update(&a,share:0.25,limit:20);a.mean=min(250,max(-250,a.mean));shapes[key]=a
         if clean,s.elapsed>1 {pace=0.94*pace+0.06*min(3,max(0.4,s.elapsed/max(8,p.seconds)))}
         reviews.removeAll{$0.puzzle.id==p.id}
-        // Failed, lost and skipped tactical puzzles rest for a growing number of
-        // completions AND wall-clock minutes (12/15min, 24/30min, 48/1h, 96/2h,
-        // capped 96/4h) before any reflection or composition may return. A
-        // clean, unassisted success of the same source resets that growth, so
-        // expired entries stay (bounded FIFO) to remember unresolved failures.
-        var cooldowns=failureCooldowns ?? [],reviewDue=total+7
-        if p.kind == .tactics {
-            let sourceKey=p.source.isEmpty ? p.id:p.source
-            if skipped {
-                let previous=cooldowns.first{$0.source==sourceKey}?.failures ?? 0
-                cooldowns.removeAll{$0.source==sourceKey}
-                let failures=min(5,previous+1),scale=pow(2,Double(failures-1))
-                let entry=PuzzleCooldown(keys:p.repeatKeys.sorted(),source:sourceKey,
-                    until:total+1+min(PuzzleCooldown.maxPresentations,Int(Double(PuzzleCooldown.basePresentations)*scale)),
-                    notBefore:now+min(PuzzleCooldown.maxSeconds,PuzzleCooldown.baseSeconds*scale),failures:failures)
-                cooldowns.append(entry);reviewDue=max(reviewDue,entry.until)
-            } else if clean {cooldowns.removeAll{$0.source==sourceKey}}
+        // A failed, lost or skipped tactical puzzle is never repeated: not as a
+        // review, a reflection or a composition of its source. Its tags above
+        // record the weakness, and selection then targets those skills.
+        if p.kind == .tactics,skipped {
+            if retiredPuzzleKeys==nil {retiredPuzzleKeys=[]}
+            retiredPuzzleKeys?.formUnion(Self.retirementKeys(p))
+            reviews.removeAll{$0.puzzle.source==p.source || $0.puzzle.id==p.id}
         }
-        if cooldowns.count>PuzzleCooldown.limit {cooldowns.removeFirst(cooldowns.count-PuzzleCooldown.limit)}
-        failureCooldowns=cooldowns
-        if !clean,p.kind == .tactics {reviews.append(PuzzleReview(puzzle:p,due:reviewDue));if reviews.count>128{reviews.removeFirst()}}
+        if !clean,!skipped,p.kind == .tactics {reviews.append(PuzzleReview(puzzle:p,due:total+7));if reviews.count>128{reviews.removeFirst()}}
         attempts.append(PuzzleAttempt(id:s.id,puzzle:p.id,tags:p.tags,family:p.family,rating:p.rating,predicted:predicted,seconds:s.elapsed,mistakes:s.mistakes,hints:s.hints,skipped:skipped,clean:clean,source:p.source,expectedSeconds:expected,difficultyVersion:p.difficultyVersion,kind:p.kind,opponentElo:s.opponentElo,succeeded:!skipped))
         if attempts.count>2000 {attempts.removeFirst()}
         total+=1;streak=clean ? streak+1:0;s.recorded=true;session=s;return true
@@ -614,4 +649,17 @@ enum OpeningJudgement {
     static let tolerance=100.0
     static func moves(rating:Double)->Int {rating<1300 ? 3:(rating<1900 ? 4:5)}
     static func punishes(best:Double,played:Double)->Bool {best.isFinite && played.isFinite && best-played>tolerance}
+}
+
+/// The prover's material scale (P1 N3 B3 R5 Q9) from one side's perspective.
+/// Improve in x succeeds when this ends above its starting value.
+enum MaterialBalance {
+    static func of(_ fen:String,white:Bool)->Int {
+        var total=0
+        for ch in fen.split(separator:" ").first ?? "" {
+            let value=["p":1,"n":3,"b":3,"r":5,"q":9][ch.lowercased()] ?? 0
+            total+=(ch.isUppercase == white ? 1:-1)*value
+        }
+        return total
+    }
 }

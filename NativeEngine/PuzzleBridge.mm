@@ -66,8 +66,11 @@ NSDictionary *CCPuzzle(NSDictionary *r){
     Board b=parse([r[@"initial"] UTF8String],[r[@"columns"] intValue],[r[@"rows"] intValue]);
     Board initial=b;
     int attacker=b.turn,mate=[r[@"mate"] intValue],gain=[r[@"gain"] intValue];
-    int horizon=mate ? 2*mate-1:[r[@"plies"] intValue],target=b.material(attacker)+gain;
-    if(mate<0||mate>5||horizon<1||horizon>10||(!mate&&(gain<1||gain>20)))throw runtime_error("Invalid objective");
+    int horizon=mate ? 2*mate-1:[r[@"plies"] intValue],start=b.material(attacker),target=start+gain;
+    // Play grades an improvement by ANY net material gain at the horizon; the
+    // certified objective (and every proof below) keeps the full `gain`.
+    int successGain=r[@"successGain"]?[r[@"successGain"] intValue]:gain;
+    if(mate<0||mate>5||horizon<1||horizon>10||(!mate&&(gain<1||gain>20||successGain<1||successGain>gain)))throw runtime_error("Invalid objective");
     NSArray *history=r[@"moves"]?:@[];
     if(history.count>NSUInteger(horizon))throw runtime_error("History past objective");
     NSMutableArray *white=[NSMutableArray array],*black=[NSMutableArray array];
@@ -80,7 +83,7 @@ NSDictionary *CCPuzzle(NSDictionary *r){
     }
     auto legal=b.legal();int depth=horizon-int(history.count);
     bool mated=legal.empty()&&b.check(b.turn)&&b.turn!=attacker;
-    bool solved=mated||(!mate&&depth==0&&!legal.empty()&&!b.dead()&&b.material(attacker)>=target);
+    bool solved=mated||(!mate&&depth==0&&!legal.empty()&&!b.dead()&&b.material(attacker)>=start+successGain);
     NSMutableDictionary *out=[@{@"fen":ps(fen(b)),@"moves":history,@"san":history,@"legal":pm(legal),@"turn":b.turn==1?@"white":@"black",@"check":@(b.check(b.turn)),@"result":b.dead()?@"Draw":legal.empty()?(b.check(b.turn)?@"Checkmate":@"Draw"):NSNull.null,@"capturedWhite":white,@"capturedBlack":black,@"lastMove":history.lastObject?:NSNull.null,@"columns":@(b.n),@"rows":@(b.h),@"solved":@(solved),@"remaining":@(depth)} mutableCopy];
     NSString *op=r[@"operation"]?:@"position";
     if(solved)out[@"tags"]=puzzleTags(initial,history,mate);
@@ -94,10 +97,53 @@ NSDictionary *CCPuzzle(NSDictionary *r){
         if(move==legal.end())throw runtime_error("Illegal candidate");
         // Prove the submitted continuation against EVERY legal defense. A PV
         // or a cached answer list is never grounds for rejecting an alternative.
-        out[@"accepted"]=@(search.force(b.push(*move),depth-1));
+        Board child=b.push(*move);
+        bool accepted=search.force(child,depth-1);
+        out[@"accepted"]=@(accepted);
+        // A rejected move stays on the board in play. The AND node stopped at
+        // the first escaping defense, so it is a memo hit here, not new work.
+        if(!accepted&&depth-1>0&&child.turn!=attacker&&!child.dead()){
+            for(auto reply:Search::ordered(child))if(!search.force(child.push(reply),depth-2)){out[@"refutation"]=ps(reply.uci());break;}
+        }
         out[@"nodes"]=@(search.nodes);return out;
     }
-    if(depth<=0||!search.force(b,depth))throw runtime_error("Objective not forced");
+    if([op isEqual:@"solvable"]){
+        // Exact, for the undo tip: can the solver still force the PLAY objective
+        // (mate, or any net gain) from here against every defense? A budget
+        // overrun is reported as unknown by the outer handler, never as "no".
+        Search exact(attacker,budget,mate?0:1,start+successGain);
+        out[@"forced"]=@(depth>0&&exact.force(b,depth));out[@"nodes"]=@(exact.nodes);return out;
+    }
+    if(depth<=0)throw runtime_error("Objective not forced");
+    bool forced=false,unknown=false;
+    try{forced=search.force(b,depth);}catch(Budget&){if(![op isEqual:@"guide"])throw;unknown=true;}
+    if(!forced&&[op isEqual:@"guide"]){
+        // Off the proof line (or beyond its budget) play continues. The defense
+        // is a bounded best effort, never a grade: hearts depend only on the
+        // actual position at the horizon. Improvements use material minimax;
+        // mates prefer a reply that escapes mate within the remaining moves.
+        auto bestMaterial=[&](const Board &at,int plies)->vector<Move>{
+            auto moves=at.legal();
+            for(int d=plies;d>=1;d--){
+                try{
+                    Search s(attacker,budget,1,target);bool own=at.turn==attacker;int best=own?-10002:10002;vector<Move> chosen;
+                    for(auto m:moves){int v=s.material_value(at.push(m),d-1);if(own?v>best:v<best){best=v;chosen={m};}}
+                    return chosen;
+                }catch(Budget&){}
+            }
+            return moves.empty()?vector<Move>{}:vector<Move>{moves[0]};
+        };
+        vector<Move> line;
+        if(!mate)line=bestMaterial(b,depth);
+        else if(b.turn!=attacker){
+            if(!unknown){try{for(auto m:Search::ordered(b))if(!search.force(b.push(m),depth-1)){line={m};break;}}catch(Budget&){}}
+            if(line.empty())line=bestMaterial(b,min(depth,3));
+        }
+        out[@"forced"]=@NO;out[@"winning"]=@[];out[@"line"]=pm(line);out[@"nodes"]=@(search.nodes);
+        return out;
+    }
+    if(!forced)throw runtime_error("Objective not forced");
+    out[@"forced"]=@YES;
     if([op isEqual:@"certify"]){
         if(history.count)throw runtime_error("Certification requires root");
         auto winners=search.winners(b,depth);

@@ -51,8 +51,8 @@ import Foundation
     for p in bank[1...3] {failed.begin(p);failed.session?.elapsed=30;failed.finish(now:0)}
     for symmetry in 0..<4 {check(!failed.allowsNextPuzzle(a.variant(symmetry)),"Failed puzzle rests beyond the last three")}
     failed=try JSONDecoder().decode(AdaptivePuzzleCoach.self,from:JSONEncoder().encode(failed))
-    check(!failed.allowsNextPuzzle(a),"Failure cooldown survives relaunch")
-    failed.total=failed.failureCooldowns![0].until;check(failed.allowsNextPuzzle(a),"Cooldown releases after its completions and minutes")
+    check(!failed.allowsNextPuzzle(a),"Failure retirement survives relaunch")
+    failed.total+=1000;check(!failed.allowsNextPuzzle(a,now:1e12),"A failed puzzle never returns")
     check(c.candidates(bank).allSatisfy{c.allowsNextPuzzle($0)},"Tactical candidate shortlist obeys hard exclusion")
     // Prepared assets with a new identity must still obey position cooldown.
     var candidate=a;candidate.id="new-cache-key"

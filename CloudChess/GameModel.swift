@@ -10,21 +10,82 @@ struct PositionState:Codable {
 
 @MainActor final class GameModel:ObservableObject {
     let subscription = SubscriptionStore.shared
+    let connectivity = Connectivity.shared
+    /// UI tests stay deterministic with the house ad; shipping builds use AdMob.
+    lazy var adService:RewardedAdService = usesGoogleAds ? GoogleRewardedAds.shared:NoFillAdService()
     @Published var showSubscription = false
     @Published private(set) var waitingForAccess = false
+    @Published private(set) var showAdBreak = false
+    @Published private(set) var showOffline = false
+    @Published private(set) var adOffer:AdAllowance.Offer?
+    @Published private(set) var houseAd:HouseAd?
+    struct HouseAd:Equatable,Identifiable {let id=UUID();let index:Int,count:Int}
+    private var houseAdContinuation:CheckedContinuation<Bool,Never>?
+    /// Free play relies on ads; it stops while offline. Subscribers keep the
+    /// fully offline game, and a puzzle already on the board may be finished.
+    private var offlineBlocked:Bool {!subscription.unlimited && !subscription.bypassAllowance && !connectivity.online}
+    private func blockAccess() {
+        waitingForAccess=true;stopPreparation();pauseClock();isGenerating=false;phase="limited"
+    }
     private func accessForNextPuzzle() async -> Bool {
         await subscription.start()
-        guard subscription.canStartPuzzle else {
-            waitingForAccess=true;showSubscription=true;stopPreparation();pauseClock()
-            isGenerating=false;phase="limited";return false
+        if offlineBlocked {blockAccess();showAdBreak=false;showOffline=true;return false}
+        showOffline=false
+        guard subscription.storageReady else {blockAccess();showSubscription=true;return false}
+        // Start the ad SDK (and its consent/ATT flow) well before the first break.
+        if usesGoogleAds,!subscription.unlimited,subscription.allowance.delivered>=5 {GoogleRewardedAds.shared.prepare()}
+        if subscription.needsAdBreak {
+            blockAccess()
+            let recent=coach.attempts.suffix(5).map{$0.seconds+4}
+            adOffer=(try? await subscription.prepareOffer(recent:recent)) ?? AdAllowance.offer(recent:recent)
+            showAdBreak=true;return false
         }
-        waitingForAccess=false;return true
+        waitingForAccess=false;showAdBreak=false;return true
     }
     func continueWithAccess() async {
         guard !busy else { return }
         guard waitingForAccess else { showSubscription=false;return }
         guard await accessForNextPuzzle() else { return }
         showSubscription=false;showReturn=false;isGenerating=true;generationStep=0;generationStartedAt=ProcessInfo.processInfo.systemUptime;await start()
+    }
+    /// One rewarded ad (short) or a disclosed bundle (long). Closing a network
+    /// ad early forfeits the batch; a no-fill while online shows the Premium
+    /// house ad and still grants it, so free play never dead-ends.
+    func watchAdBreak(_ kind:AdAllowance.Break) async {
+        guard showAdBreak,!busy else{return}
+        showAdBreak=false;busy=true
+        let count=kind == .short ? 1:AdAllowance.longAds
+        for index in 0..<count {
+            if offlineBlocked {busy=false;showOffline=true;return}
+            switch await adService.show() {
+            case .rewarded: continue
+            case .dismissed: busy=false;showAdBreak=true;return
+            case .noFill:
+                guard await presentHouseAd(index:index,count:count) else {busy=false;showAdBreak=true;return}
+            }
+        }
+        do {try await subscription.grant(kind)} catch {busy=false;showAdBreak=true;return}
+        busy=false
+        await continueWithAccess()
+    }
+    private func presentHouseAd(index:Int,count:Int) async -> Bool {
+        await withCheckedContinuation { continuation in
+            houseAdContinuation=continuation;houseAd=HouseAd(index:index,count:count)
+        }
+    }
+    func finishHouseAd(completed:Bool=true) {
+        houseAd=nil;let waiting=houseAdContinuation;houseAdContinuation=nil;waiting?.resume(returning:completed)
+    }
+    var houseAdSeconds:Double {
+        #if DEBUG
+        if testing,ProcessInfo.processInfo.arguments.contains("--fast-ads") {return 1}
+        #endif
+        return 5
+    }
+    /// Connectivity or subscription changes can lift an offline block by themselves.
+    func accessConditionsChanged() async {
+        guard waitingForAccess,showOffline,!offlineBlocked else{return}
+        showOffline=false;await continueWithAccess()
     }
     private func admitCurrentPuzzle() async throws {
         guard let session=coach.session,session.requiresAdmission==true else { return }
@@ -77,7 +138,6 @@ struct PositionState:Codable {
     @Published var error:String?
     @Published var revision=0
     @Published var promotion:[String]=[]
-    @Published var showUndo=false
     @Published var showSkip=false
     @Published var showHint=false
     @Published private(set) var journeyStarted:Date?
@@ -106,12 +166,24 @@ struct PositionState:Codable {
     private var replayToken=UUID()
     private var replayLoading=false
     var nextHintStage:Int {coach.session?.nextHintStage ?? 1}
-    var canHint:Bool {!busy && !replayActive && !showInfo && !showReturn && foreground && phase=="playing" && connected && state.result==nil && challengeKind != .whosWinning && nextHintStage<=3}
-    var hintTitle:String {nextHintStage==1 ? "Reveal the area?":nextHintStage==2 ? "Reveal the piece?":"Watch the idea?"}
+    var canHint:Bool {!busy && !replayActive && !showInfo && !showReturn && foreground && phase=="playing" && connected && state.result==nil && challengeKind != .whosWinning && nextHintStage==1}
+    var hintTitle:String {offTrackMate ? "Reveal the misstep?":"Reveal the key piece?"}
+    /// No mate exists from here: the only useful help is where the line left
+    /// the win, which the player then undoes back to.
+    var offTrackMate:Bool {
+        guard let p=puzzle,p.kind == .tactics,p.mate>0,let off=coach.session?.offTrack else{return false}
+        return off<state.moves.count
+    }
+    /// Learner moves used out of the x the objective allows.
+    var movesUsed:Int {min(puzzle?.solverMoves ?? 0,(state.moves.count+1)/2)}
     func requestHint() {guard canHint else{return};showHint=true}
 
     var canUndo:Bool {!replayActive && challengeKind != .whosWinning && !replayActive && !busy && !showInfo && !showReturn && foreground && (phase=="playing" || phase=="failed") && !(coach.session?.moves.isEmpty ?? true) && coach.session?.succeeded != true}
     var puzzleReward:Double {coach.session?.reward ?? 0}
+    /// Improve in x shows the material balance against its starting mark.
+    var showsMaterialBar:Bool {puzzle.map{$0.kind == .tactics && $0.mate==0} ?? false}
+    var materialBalance:Int {MaterialBalance.of(state.fen,white:solverWhite)}
+    var startingMaterial:Int {puzzle.map{MaterialBalance.of($0.fen,white:$0.white)} ?? 0}
     @Published var phase="loading"
     @Published private(set) var isGenerating=true
     @Published private(set) var generationStep=0
@@ -444,13 +516,13 @@ struct PositionState:Codable {
     private var excludedPuzzleID:String?
     var instructionType:String {coach.session?.instructionType ?? challengeKind.rawValue}
     var instructionExplanation:String {
-        if instructionType=="mate" {return "Find the winning moves and checkmate the king."}
-        if instructionType=="improvement" {return "Find the winning continuation to improve your position."}
+        if instructionType=="mate" {return "Checkmate the king within \(puzzle?.mate ?? 1) moves."}
+        if instructionType=="improvement" {return "Win material within \(puzzle?.solverMoves ?? 1) moves."}
         return challengeExplanation
     }
     @Published var challengeNotice:String?
     var challengeKind:ChallengeKind {puzzle?.kind ?? coach.challengeMode ?? .tactics}
-    var challengeTitle:String {challengeKind == .tactics ? ((puzzle?.mate ?? 0)>0 ? "Checkmate the king":"Improve your position"):challengeKind.title}
+    var challengeTitle:String {challengeKind == .tactics ? ((puzzle?.mate ?? 0)>0 ? "Mate in \(puzzle?.mate ?? 1)":"Improve position in \(puzzle?.solverMoves ?? 1)"):challengeKind.title}
     var challengeExplanation:String {challengeKind.explanation(mate:puzzle?.mate ?? 0,plies:puzzle?.plies ?? 0)}
     var liveScore:Double {
         coach.currentScore
@@ -465,8 +537,11 @@ struct PositionState:Codable {
     private let styleDefaults:UserDefaults,store:PuzzleCoachStore
     #if DEBUG
     private let testing=ProcessInfo.processInfo.arguments.contains("--uitesting")
+    /// `--real-ads` runs the actual Google SDK (with Google's sample unit) under UI tests.
+    private let usesGoogleAds = !ProcessInfo.processInfo.arguments.contains("--uitesting") || ProcessInfo.processInfo.arguments.contains("--real-ads")
     #else
     private let testing=false
+    private let usesGoogleAds=true
     #endif
     private var bank:[TrainingPuzzle]=[]
     private var guide:[String:Any]=[:]
@@ -494,8 +569,8 @@ struct PositionState:Codable {
     var blunderStage:String {coach.session?.blunderPly==nil ? "Stay balanced":"Keep the advantage · \(blunderProgress) / 3"}
     var remaining:Int {coach.session?.recorded==true ? 0:max(0,(puzzle?.solverMoves ?? 1)-(state.moves.count+1)/2)}
     var diagnostic:String {
-        "generationWorkMs:\(generationWorkMilliseconds),generationFullMs:\(generationFullMilliseconds),errorDetail:\((error ?? "").replacingOccurrences(of:",",with:";").replacingOccurrences(of:"\n",with:" ")),searchExecuted:\(NativeChess.searchMetrics["executed"] ?? 0),searchJoined:\(NativeChess.searchMetrics["joined"] ?? 0),searchPreserved:\(NativeChess.searchMetrics["preserved"] ?? 0),lastJourneyMs:\(Int(lastJourneyDuration*1000)),journeyFallbacks:\(journeyFallbacks),hintMarks:\(world.marks.childNodes.count),boardMatches:\(world.symbols==CloudScene.decode(state.fen).filter{dimensions.position($0.key) != nil} ? 1:0),journey:\(journeyActive ? 1:0),journeyFallback:\(journeyFallback ? 1:0),replay:\(replayActive ? 1:0),replayIndex:\(replayIndex),replayCount:\(replayCount),hintStage:\(coach.session?.hintStage ?? 0),hintDiscounts:\(coach.session?.hintDiscounts ?? 0),moveGrade:\(world.moveQuality.lastQuality),gradeEvents:\(world.moveQuality.events),gradeSquare:\(world.moveQuality.square),judgmentAnswer:\(puzzle?.judgment?.verdict.rawValue ?? ""),blunderPly:\(coach.session?.blunderPly ?? -1),blunderProgress:\(blunderProgress),challengeLevel:\(Int(coach.challengeLevel(challengeKind))),opponent:\(Int(coach.session?.opponentElo ?? 0)),modeAbility:\(Int(coach.modeAbility(challengeKind))),targetRating:\(Int(coach.targetRating(for:challengeKind))),scoreEvents:\(scoreFeedbackID),scoreDirection:\(scoreDirection),mistakeFeedback:\(mistakeFeedbackCount),outcomeHaptics:\(outcomeHapticCount),evaluating:\(evaluationActivity == nil ? 0:1),cooldowns:\(coach.activeCooldowns().count)," +
-        "freeRemaining:\(subscription.remaining),unlimited:\(subscription.unlimited ? 1:0),hearts:\(coach.remainingHearts),best:\(Int(coach.scoring?.best ?? 0)),generating:\(isGenerating ? 1:0),generationStep:\(generationStep),contents:\(collection.pending?.shards.count ?? 0),undos:\(coach.session?.undoCount ?? 0),reward:\(Int(puzzleReward))," +
+        "generationWorkMs:\(generationWorkMilliseconds),generationFullMs:\(generationFullMilliseconds),errorDetail:\((error ?? "").replacingOccurrences(of:",",with:";").replacingOccurrences(of:"\n",with:" ")),searchExecuted:\(NativeChess.searchMetrics["executed"] ?? 0),searchJoined:\(NativeChess.searchMetrics["joined"] ?? 0),searchPreserved:\(NativeChess.searchMetrics["preserved"] ?? 0),lastJourneyMs:\(Int(lastJourneyDuration*1000)),journeyFallbacks:\(journeyFallbacks),hintMarks:\(world.marks.childNodes.count),hintPulse:\(world.pulsingPiece ? 1:0),undoTipEvents:\(coach.undoTips?.events ?? 0),undoTipsShown:\(coach.undoTips?.shown ?? 0),undoTip:\(undoTip == nil ? 0:1),boardMatches:\(world.symbols==CloudScene.decode(state.fen).filter{dimensions.position($0.key) != nil} ? 1:0),journey:\(journeyActive ? 1:0),journeyFallback:\(journeyFallback ? 1:0),replay:\(replayActive ? 1:0),replayIndex:\(replayIndex),replayCount:\(replayCount),hintStage:\(coach.session?.hintStage ?? 0),hintDiscounts:\(coach.session?.hintDiscounts ?? 0),moveGrade:\(world.moveQuality.lastQuality),gradeEvents:\(world.moveQuality.events),gradeSquare:\(world.moveQuality.square),judgmentAnswer:\(puzzle?.judgment?.verdict.rawValue ?? ""),blunderPly:\(coach.session?.blunderPly ?? -1),blunderProgress:\(blunderProgress),challengeLevel:\(Int(coach.challengeLevel(challengeKind))),opponent:\(Int(coach.session?.opponentElo ?? 0)),modeAbility:\(Int(coach.modeAbility(challengeKind))),targetRating:\(Int(coach.targetRating(for:challengeKind))),scoreEvents:\(scoreFeedbackID),scoreDirection:\(scoreDirection),mistakeFeedback:\(mistakeFeedbackCount),outcomeHaptics:\(outcomeHapticCount),evaluating:\(evaluationActivity == nil ? 0:1),cooldowns:\(coach.activeCooldowns().count),retired:\(coach.retiredPuzzleKeys?.count ?? 0),offTrack:\(coach.session?.offTrack ?? -1),movesUsed:\(movesUsed),material:\(materialBalance),startMaterial:\(startingMaterial)," +
+        "freeRemaining:\(subscription.allowance.credits),adBreak:\(showAdBreak ? 1:0),offline:\(showOffline ? 1:0),houseAd:\(houseAd == nil ? 0:1),googleAd:\(GoogleRewardedAds.shared.status),adOffer:\(adOffer.map{"\($0.short)|\($0.long)"} ?? ""),unlimited:\(subscription.unlimited ? 1:0),hearts:\(coach.remainingHearts),best:\(Int(coach.scoring?.best ?? 0)),generating:\(isGenerating ? 1:0),generationStep:\(generationStep),contents:\(collection.pending?.shards.count ?? 0),undos:\(coach.session?.undoCount ?? 0),reward:\(Int(puzzleReward))," +
         "lastTurnMs:\(lastTurnMilliseconds),preparedReplyUsed:\(preparedReplyUsed),preparedReplies:\(preparedReplies.count),preparedMoves:\(preparedMoves),preparedMoveUsed:\(preparedMoveUsed),preparedReady:\(preparedReady),preparedUsed:\(preparedUsed),pendingMove:\(pendingMove ?? ""),visibleSquares:\(world.symbols.keys.sorted().joined(separator:"|")),rewardPicks:\(collection.pending?.choices.count ?? 0),rewardChosen:\((collection.pending?.choices ?? []).map(String.init).joined(separator:"|")),rewardOwned:\(collection.quantities.values.reduce(0,+)),profileSaved:\(UserDefaults(suiteName:"com.maroon.CloudChess.profile-tests")!.object(forKey:"cloudchess.profileLink")==nil ? 0:1),profileFile:\(FileManager.default.fileExists(atPath:FileManager.default.urls(for:.applicationSupportDirectory,in:.userDomainMask)[0].appendingPathComponent("CloudChess/profiles.sqlite3").path) ? 1:0),night:\(night ? 1:0),sideText:\(world.sideAnnouncement.events),sideVisible:\(world.sideAnnouncement.visible ? 1:0),motion:\(motion ? 1:0),boardTheme:\(collection.selectedBoard),pieceTheme:\(collection.selectedPieces),ownedBoards:\(collection.masks.count),collectionSolved:\(collection.successes),rewardBoard:\(collection.pending == nil ? 0:1),winning:\((guide["winning"] as? [String] ?? []).joined(separator:"|")),instructionType:\(instructionType),revealed:\(boardRevealed ? 1:0),kind:\(challengeKind.rawValue),cp:\(Int(coach.session?.evaluation ?? 0)),score:\(Int(liveScore)),selected:\(selected ?? ""),moves:\(state.moves.count),error:\(error == nil ? 0:1),itemRating:\(Int(puzzle?.rating ?? 0)),difficulty:\(puzzle?.difficultyVersion ?? "legacy"),side:\(solverWhite ? "white":"black"),phase:\(phase),ready:\(!busy && phase=="playing" && !showReturn && guideTask==nil ? 1:0),completed:\(coach.total),mistakes:\(coach.session?.mistakes ?? 0),hints:\(coach.session?.hints ?? 0),rating:\(Int(coach.ability.mean)),id:\(puzzle?.id ?? ""),next:\((guide["line"] as? [String])?.first ?? ""),legal:\(state.legal.joined(separator:"|")),confetti:\(world.celebration.count),bursts:\(world.celebration.bursts)"
     }
     init() {
@@ -580,6 +655,8 @@ struct PositionState:Codable {
         if active {Task{await refreshConnectedProfile()}}
     }
     func didEnterBackground() {
+        // An unfinished house ad grants nothing; the break is offered again.
+        if houseAd != nil {finishHouseAd(completed:false)}
         stopPreparation()
         pauseClock();foreground=false;NativeChess.setGameplayActive(false)
         if puzzle != nil {
@@ -684,6 +761,7 @@ struct PositionState:Codable {
                 coach.session?.puzzle=measured;try await save()
             }
             if let s=coach.session,!s.recorded {
+                if offlineBlocked {blockAccess();showOffline=true;return}
                 try await admitCurrentPuzzle()
                 let response=try await NativeChess.call(s.puzzle.request(moves:s.moves))
                 await prepareScene(response);apply(response);connected=true;error=nil
@@ -694,7 +772,12 @@ struct PositionState:Codable {
                     if let tags=response["tags"] as? [String] {coach.session?.puzzle.tags=tags}
                     try await complete()
                 }
-                else {try await continueDefense();phase="playing";let entrance=enterBoard();introduce();revealSide(delay:entrance)}
+                else {
+                    try await continueDefense()
+                    // A relaunch saved at the horizon may have spent the last heart.
+                    guard coach.session?.id==s.id,coach.session?.recorded != true else{return}
+                    phase="playing";let entrance=enterBoard();introduce();revealSide(delay:entrance)
+                }
             } else {try await nextPuzzle()}
 
         } catch {handle(error)}
@@ -708,7 +791,7 @@ struct PositionState:Codable {
         await sharedAssets
     }
     private func generateNextPuzzle() async throws {
-        closeReplay();showHint=false
+        closeReplay();showHint=false;undoTip=nil
         // Preparation that already reached the next-puzzle phase is kept alive
         // for a bounded wait instead of being discarded and redone here. Its
         // result still passes takePrepared's PreparedChallengeGate revalidation.
@@ -743,6 +826,10 @@ struct PositionState:Codable {
         if testing,coach.total==0,let arg=ProcessInfo.processInfo.arguments.first(where:{$0.hasPrefix("--puzzle-mate=")}),let mate=Int(arg.dropFirst(14)) {
             candidates=catalog.filter{p in p.mate==mate && (coach.preferredColumns==nil || (p.columns==coach.preferredColumns && p.rows==coach.preferredRows))}.prefix(16).map{$0.variant(0)}
         }
+        // Tutorial art: one exact bank puzzle, unreflected (scripts/build_tutorial_art.swift).
+        if testing,coach.total==0,let arg=ProcessInfo.processInfo.arguments.first(where:{$0.hasPrefix("--tutorial-fixture=")}) {
+            let id=String(arg.dropFirst(19));candidates=bank.filter{$0.id==id}.map{$0.variant(0)}
+        }
         if testing,coach.total==0,ProcessInfo.processInfo.arguments.contains("--puzzle-promotion") {
             candidates=bank.filter{$0.mate==1 && $0.columns==6 && $0.rows==6 && $0.line.first?.count==5}.prefix(16).map{$0.variant($0.white ? 2:0)}
         }
@@ -757,7 +844,11 @@ struct PositionState:Codable {
             candidates=candidates.map{$0.white==white ? $0:$0.variant(2)}
         }
         #endif
-        candidates=candidates.filter{coach.allowsNextPuzzle($0) && $0.id != excludedPuzzleID && (requiredInstructionType==nil || (requiredInstructionType=="mate" ? $0.mate>0:$0.mate==0))}
+        let matchesRequest={(p:TrainingPuzzle) in p.id != self.excludedPuzzleID && (self.requiredInstructionType==nil || (self.requiredInstructionType=="mate" ? p.mate>0:p.mate==0))}
+        let allowed=candidates.filter{coach.allowsNextPuzzle($0) && matchesRequest($0)}
+        // A starved stratum's shortlist already ranks retired sources last; only
+        // the last three stay a hard exclusion so the frozen draw is servable.
+        candidates=allowed.isEmpty ? candidates.filter{$0.repeatKeys.isDisjoint(with:coach.recencyPuzzleKeys) && matchesRequest($0)}:allowed
         if let ready=takePrepared(.tactics,parents:candidates),let proof=ready.proof {
             var p=ready.puzzle;p.tags=proof["tags"] as? [String] ?? p.tags;p.line=proof["line"] as? [String] ?? p.line;p.nodes=proof["nodes"] as? Int ?? p.nodes
             coach.begin(p);try await save();guide=proof;await prepareScene(proof);apply(proof);connected=true;error=nil
@@ -815,7 +906,7 @@ struct PositionState:Codable {
             openAssessment=nil
             let next=try JSONDecoder().decode(PositionState.self,from:JSONSerialization.data(withJSONObject:response))
             dimensions=BoardDimensions(columns:next.columns ?? 8,rows:next.rows ?? 8)!
-            world.additionalBottomClearance=puzzle?.kind == .whosWinning ? 140:(puzzle?.kind == .tenMoves ? 85:0)
+            world.additionalBottomClearance=puzzle?.kind == .whosWinning ? 140:(puzzle?.kind == .tenMoves || showsMaterialBar ? 85:0)
             world.orient(whiteAtBottom:solverWhite)
             state=next;selected=nil;world.display(next.fen,move:animated ? next.lastMove:nil,dimensions:dimensions)
             if animated {noteLanding(world.moveAnimationDuration)}
@@ -829,13 +920,24 @@ struct PositionState:Codable {
         guard let p=puzzle else{throw failure("Missing active puzzle")}
         guide=try await NativeChess.call(p.request("guide",moves:state.moves));revision+=1
     }
-    private func continueDefense() async throws {
+    private func continueDefense(refutation:String?=nil) async throws {
         guard let p=puzzle else{return}
         if state.turn != (p.white ? "white":"black"),state.result==nil,state.moves.count<p.plies {
-            try await refreshGuide()
-            guard let move=(guide["line"] as? [String])?.first else{throw failure("Missing certified defense")}
-            try await advance(move)
+            let reply:String
+            if p.mate>0,let refutation,state.legal.contains(refutation) {reply=refutation}
+            else {
+                try await refreshGuide()
+                guard let move=(guide["line"] as? [String])?.first else{throw failure("Missing certified defense")}
+                if guide["forced"] as? Bool==false,coach.session?.offTrack==nil {coach.session?.offTrack=max(0,state.moves.count-1)}
+                reply=move
+            }
+            try await advance(reply)
         }
+        guard puzzle?.id==p.id,coach.session?.recorded != true else{return}
+        // Improve in x: the horizon reply ends the attempt; any net material
+        // gain (or mate) completed in advance(). Otherwise a heart is lost.
+        // Also covers a relaunch saved at the horizon before the heart.
+        if state.result != nil || state.moves.count>=p.plies {try await missedObjective();return}
         // The guide after the reply is not needed to accept the next drop; it
         // runs concurrently so input unlocks with the landing. Hints and
         // speculation await it; a stale result can never reach a new position.
@@ -933,7 +1035,7 @@ struct PositionState:Codable {
         challengeKind != .whosWinning && !replayActive && !busy && !moveQueued && !overlay && !showInfo && !showReturn && foreground && promotion.isEmpty && connected && phase=="playing" && state.result==nil && state.turn==(solverWhite ? "white":"black") && world.symbols[square]?.isUppercase==solverWhite
     }
     private func beginDrag(_ square:String)->Bool {
-        guard canPickUp(square) else{return false};stopPreparation(keepingTurn:true,source:square);selected=square
+        guard canPickUp(square) else{return false};world.cancelHintPulse();stopPreparation(keepingTurn:true,source:square);selected=square
         world.mark(selected:square,legal:state.legal.filter{$0.hasPrefix(square)},last:state.lastMove)
         if sound {impactHaptic.impactOccurred(intensity:0.45);impactHaptic.prepare();outcomeHapticGenerator.prepare()};return true
     }
@@ -952,39 +1054,50 @@ struct PositionState:Codable {
             if candidates.count>1 {promotion=candidates;pauseClock();return}
             if let move=candidates.first {queue(move);return}
         }
-        if canPickUp(square) {selected=selected==square ? nil:square;if sound{UISelectionFeedbackGenerator().selectionChanged();impactHaptic.prepare();outcomeHapticGenerator.prepare()}} else{return}
+        if canPickUp(square) {world.cancelHintPulse();selected=selected==square ? nil:square;if sound{UISelectionFeedbackGenerator().selectionChanged();impactHaptic.prepare();outcomeHapticGenerator.prepare()}} else{return}
         world.mark(selected:selected,legal:state.legal.filter{$0.hasPrefix(selected ?? "--")},last:state.lastMove)
     }
     func play(_ move:String,dragged:Bool=false) async {
         guard challengeKind != .whosWinning,!replayActive,!busy,!showInfo,!showReturn,foreground,connected,phase=="playing",state.turn==(solverWhite ? "white":"black"),state.result==nil,state.legal.contains(move),let p=puzzle else{return}
-        stopPreparation(keepingTurn:true,move:move);pauseClock();busy=true;promotion=[];error=nil;evaluationActivity="Checking move";defer{pendingMove=nil;evaluationActivity=nil;busy=false;resumeClock()}
+        stopPreparation(keepingTurn:true,move:move);pauseClock();busy=true;promotion=[];error=nil;undoTip=nil;evaluationActivity="Checking move";defer{pendingMove=nil;evaluationActivity=nil;busy=false;resumeClock()}
         do {
             if p.kind != .tactics {try await playOpen(move);return}
             // Render the legal drop before any objective search. The pending
-            // preview never changes the saved attempt until it is proven.
+            // preview never changes the saved attempt until it is accepted.
             let previewStarted=ProcessInfo.processInfo.systemUptime
             defer {lastTurnMilliseconds=Int((ProcessInfo.processInfo.systemUptime-previewStarted)*1000)}
             // A dragged piece is already hovering over its square: a shorter arc.
             let landing:TimeInterval? = dragged ? (world.reducedMotion ? 0.01:0.3):nil
             let preview=try await previewMove(move,landing:landing)
-            var request=p.request("judge",moves:state.moves)
-            request["candidate"]=move;request["budget"]=1_000_000
-            let judgement=try await NativeChess.call(request)
-            try await finishLanding(since:previewStarted,landing:landing)
-            guard let accepted=judgement["accepted"] as? Bool else{throw failure("Move could not be proven; attempt not graded")}
-            if !accepted {
+            let history=state.moves,solved=preview["solved"] as? Bool==true
+            // Mate in x: a heart is lost only when the x-th move does not mate
+            // (or any move ends the game without the objective). Earlier wrong
+            // moves stay on the board and the opponent defends; undo recovers.
+            if !solved,(p.mate>0 && history.count+1>=p.plies) || !(preview["result"] is NSNull) {
+                try await finishLanding(since:previewStarted,landing:landing)
                 if try await registerMistake(at:String(move.dropFirst(2).prefix(2))) {return}
                 // Animate the piece back instead of a static pause and teleport.
                 phase="retry"
                 let back=world.reducedMotion ? 0.12:0.24
                 world.returnPreview(move,duration:back)
                 try await wait(back)
-                world.display(state.fen,dimensions:dimensions);selected=nil;revision+=1;phase="playing";return
+                world.display(state.fen,dimensions:dimensions);selected=nil;revision+=1;phase="playing";adviseUndoIfStuck();return
             }
+            // The all-defenses proof only tracks whether the line still wins and
+            // supplies the escaping defense. It never grades: an exhausted
+            // budget simply leaves the track unknown.
+            var judgement:[String:Any]?
+            if !solved {
+                var request=p.request("judge",moves:history)
+                request["candidate"]=move;request["budget"]=1_000_000
+                judgement=try? await NativeChess.call(request)
+            }
+            try await finishLanding(since:previewStarted,landing:landing)
+            if judgement?["accepted"] as? Bool==false,coach.session?.offTrack==nil {coach.session?.offTrack=history.count}
             try await advance(move,prepared:preview)
             // complete() replaces the session. Never make an old puzzle's reply
             // on the freshly arrived position.
-            if puzzle?.id==p.id,coach.session?.recorded != true {try await continueDefense()}
+            if puzzle?.id==p.id,coach.session?.recorded != true {try await continueDefense(refutation:judgement?["refutation"] as? String)}
         } catch {world.display(state.fen,dimensions:dimensions);handle(error)}
     }
     func newGame() async {
@@ -1000,7 +1113,7 @@ struct PositionState:Codable {
     }
     func undo() async {
         guard canUndo,let p=puzzle,var attempt=coach.session else{return}
-        stopPreparation();pauseClock();busy=true;evaluationActivity="Checking restored position";defer{evaluationActivity=nil;busy=false;resumeClock()}
+        undoTip=nil;stopPreparation();pauseClock();busy=true;evaluationActivity="Checking restored position";defer{evaluationActivity=nil;busy=false;resumeClock()}
         do {
             guard attempt.undoLastDecision() else{return}
             // Prepare a legal rewind before charging its reward reduction.
@@ -1019,29 +1132,36 @@ struct PositionState:Codable {
             challengeNotice=nil;promotion=[];phase="playing";connected=true;error=nil;revision+=1
         }catch{handle(error)}
     }
+    /// One hint per move: the key piece pulses for three seconds. Off the
+    /// winning line of a mate it is the piece that left it (undo that move).
     func hint() async {
         guard canHint,let p=puzzle else{return}
         showHint=false;stopPreparation();pauseClock();busy=true;evaluationActivity="Finding a hint"
         defer {evaluationActivity=nil;busy=false;resumeClock()}
         do {
-            if p.kind == .tactics {
-                try await ensureGuide()
-            } else if openAssessment==nil {try await refreshOpenEvaluation()}
-            let line=guide["line"] as? [String] ?? []
-            guard let move=line.first,state.legal.contains(move),foreground,!showReturn else{return}
-            let stage=nextHintStage
-            let frames = stage==3 ? try await frames(for:Lesson(puzzle:p,history:state.moves,line:Array(line.prefix(3)))):[]
+            let square:String
+            if offTrackMate,let off=coach.session?.offTrack,off<state.moves.count {
+                // Follow the misstepping piece through any later moves of its own.
+                var at=String(state.moves[off].dropFirst(2).prefix(2))
+                for move in state.moves.dropFirst(off+1) where move.prefix(2)==at {at=String(move.dropFirst(2).prefix(2))}
+                square=at
+            } else {
+                if p.kind == .tactics {try await ensureGuide()} else if openAssessment==nil {try await refreshOpenEvaluation()}
+                let line=guide["line"] as? [String] ?? []
+                guard let move=line.first,state.legal.contains(move) else{return}
+                square=String(move.prefix(2))
+            }
             guard foreground,!showReturn else{return}
             var session=coach.session!;session.revealHint()
             // Save before displaying assistance; failure never grants an uncharged hint.
             let previous=coach.session;coach.session=session
             do {try await save()} catch {coach.session=previous;throw error}
-            if stage==1 {selected=nil;world.hintRegion(around:String(move.prefix(2)))}
-            else if stage==2 {selected=String(move.prefix(2));world.mark(selected:selected,legal:[],last:nil)}
-            else {beginReplay(frames,puzzle:p)}
-            revision+=1
+            selected=nil;world.mark(selected:nil,legal:[],last:state.lastMove);world.pulsePiece(at:square,duration:3);revision+=1
+            // Publish the pulse's end too (HUD/accessibility state follows it).
+            Task { [weak self] in try? await Task.sleep(for:.seconds(3.4));self?.hintPulseEnded+=1 }
         } catch {handle(error)}
     }
+
     /// Returns the entrance delay before the side text may rise: 0 after a
     /// journey (board already stationary) or under the instruction card.
     @discardableResult private func enterBoard()->Double {
@@ -1134,7 +1254,7 @@ struct PositionState:Codable {
         requiredInstructionType=nil;excludedPuzzleID=nil
         if !foreground {showReturn=true}
         guard !showReturn else{return}
-        let key="type-v2:"+instructionType
+        let key="type-v3:"+instructionType
         if !(coach.introductions ?? []).contains(key) {
             pauseClock();firstTypeIntroduction=true
             boardRevealed=true;showInfo=true;world.settleForInstructions()
@@ -1147,7 +1267,7 @@ struct PositionState:Codable {
     }
     func acknowledgeInstructions() async {
         guard !busy else{return}
-        coach.introductions=(coach.introductions ?? []).union(["type-v2:"+instructionType])
+        coach.introductions=(coach.introductions ?? []).union(["type-v3:"+instructionType])
         showInfo=false;checkpoint();boardRevealed=true;resumeClock()
         presentSideAnnouncement()
     }
@@ -1436,6 +1556,47 @@ struct PositionState:Codable {
         // current baseline and publishes it without holding the board busy.
         if p.kind == .tenMoves,state.result==nil,ImprovementChallenge.isComplete(plies:state.moves.count) {try await refreshOpenEvaluation()}
         _ = try await finishOpenIfNeeded()
+    }
+    @Published private(set) var undoTip:UUID?
+    @Published private(set) var hintPulseEnded=0
+    /// After a lost heart, when the engine PROVES the current position can no
+    /// longer reach the objective, earlier moves were the problem: suggest undo
+    /// (first three times, then every 2–3). Runs off the input path.
+    private func adviseUndoIfStuck() {
+        guard let p=puzzle,p.kind == .tactics,let session=coach.session,!session.recorded,!state.moves.isEmpty else{return}
+        let history=state.moves,id=session.id
+        Task { [weak self] in
+            var request=p.request("solvable",moves:history);request["budget"]=1_000_000
+            guard let result=try? await NativeChess.call(request),result["forced"] as? Bool==false,let self,
+                  self.coach.session?.id==id,self.state.moves==history,self.coach.session?.recorded != true,self.phase=="playing" else{return}
+            if self.coach.noteUnsolvableMiss() {self.showUndoTip()}
+            self.checkpoint()
+        }
+    }
+    private func showUndoTip() {
+        let token=UUID();undoTip=token
+        UIAccessibility.post(notification:.announcement,argument:"Hint: you may want to undo some previous moves!")
+        Task { [weak self] in
+            try? await Task.sleep(for:.seconds(4.5))
+            if self?.undoTip==token {self?.undoTip=nil}
+        }
+    }
+    func dismissUndoTip() {undoTip=nil}
+    /// x moves are used (or the defense ended the game) without the objective:
+    /// one heart, then the horizon turn is taken back for free so the player
+    /// can try again or undo further.
+    private func missedObjective() async throws {
+        guard let p=puzzle else{return}
+        let square=state.moves.count>=2 ? String(state.moves[state.moves.count-2].dropFirst(2).prefix(2)):String((state.lastMove ?? "").dropFirst(2).prefix(2))
+        if try await registerMistake(at:square) {return}
+        phase="retry"
+        try await wait(world.reducedMotion ? 0.5:0.9)
+        guard var session=coach.session,session.puzzle.id==p.id else{return}
+        session.rewindMissedTurn();coach.session=session
+        let pending=enqueueSave()
+        let response=try await NativeChess.call(p.request(moves:session.moves))
+        apply(response);guide=[:];try await pending.value()
+        phase="playing";startGuideRefresh();adviseUndoIfStuck()
     }
     @discardableResult private func registerMistake(at square:String) async throws->Bool {
         evaluationActivity=nil

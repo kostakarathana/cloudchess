@@ -21,11 +21,13 @@ import Foundation
         for slot in [2,3] {c.total=slot;check(c.reviewSlot);check((valid(c)==nil)==c.eligibleReview(c.reviews[0]))}
         for idle in [0,1] {c.total=idle;check(!c.reviewSlot);check(valid(c) != nil)}
         c.reviews=[];c.total=0
-        // A failed presentation cools the source: mirrors are rejected until both gates open.
+        // A failed presentation retires the source: mirrors are rejected for good.
         var cooled=c;cooled.begin(original);cooled.session?.mistakes=3;cooled.finish(skipped:true,now:0)
         cooled.session=nil;cooled.recentPuzzleKeys=[];cooled.focusedSelection=c.focusedSelection
         check(PreparedChallengeGate.revalidate(original.variant(1),ability:ability,age:10,coach:cooled,excluded:nil,instruction:nil,parent:original)==nil)
-        cooled.total=cooled.failureCooldowns![0].until+1;cooled.reviews=[]
+        cooled.total+=1000;cooled.reviews=[]
+        check(PreparedChallengeGate.revalidate(original.variant(1),ability:cooled.challengeLevel(.tactics),age:10,coach:cooled,excluded:nil,instruction:nil,parent:original)==nil)
+        cooled.retiredPuzzleKeys=[]
         check(PreparedChallengeGate.revalidate(original.variant(1),ability:cooled.challengeLevel(.tactics),age:10,coach:cooled,excluded:nil,instruction:nil,parent:original) != nil)
         let savedAbility=c.ability.mean;c.scoring=ChallengeScore(total:100000000,best:100000000);check(valid(c)==nil);c.scoring=nil;c.ability.mean=savedAbility
         for n in 4...8 {for h in 4...8 {

@@ -31,10 +31,18 @@ the same release if starting from a Git clone. Compiled native libraries are
 rebuilt from the included sources rather than supplied as opaque binaries.
 
 For the latest Git revision, keep the code from that checkout and copy only
-`CloudChess/EngineResources` from the v1.0.0-source archive into it. The focused
-puzzle update changes code only; its networks, puzzle bank and artwork are
-unchanged from that resource archive. Collection and other modes are paused;
-only checkmate and short improvement puzzles are active. Run
+`CloudChess/EngineResources` from the v1.0.0-source archive into it. Updates
+since 1.0 change code, tutorial images and the bundled legal notices only; the
+networks, puzzle bank and other resources are unchanged from that archive.
+Collection and other modes are paused; only "Mate in x" and "Improve position in
+x" puzzles are active.
+
+Version 2.0 supports free play with rewarded ads. It links Google's Mobile Ads
+SDK and User Messaging Platform through Swift Package Manager (versions pinned in
+`CloudChess.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved`).
+Those are Google's own prebuilt components, downloaded from Google under Google's
+terms when you resolve packages; they are not part of this source release. Debug
+builds request only Google's sample ad unit. Run
 `python3 scripts/build_store_pages.py` after copying the resource directory to
 regenerate the matching offline notices from the current canonical source.
 
