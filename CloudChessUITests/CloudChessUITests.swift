@@ -243,22 +243,8 @@ final class CloudChessUITests:XCTestCase {
         let springboard=XCUIApplication(bundleIdentifier:"com.apple.springboard")
         let app=XCUIApplication();app.launchArguments=["--uitesting","--monetization-testing","--ad-break-due","--real-ads","--board=6x6","--reduced-motion"]
         app.launch()
-        func answerPrompts() {
-            for label in ["Ask App Not to Track","Don’t Allow"] {let b=springboard.buttons[label];if b.exists {b.tap();return}}
-            // Google's IDFA explainer / consent form is a web view; its controls surface as buttons or links.
-            for label in ["Continue","Consent","Do not consent"] {
-                // UMP's web view reports its controls as not hittable, so tap their centre.
-                // Google keeps a second, offscreen copy of its form, so pick the copy on screen.
-                let screen=app.frame
-                for query in [app.buttons.matching(identifier:label),app.links.matching(identifier:label)] {
-                    for b in query.allElementsBoundByIndex where !b.frame.isEmpty && screen.contains(CGPoint(x:b.frame.midX,y:b.frame.midY)) {
-                        b.coordinate(withNormalizedOffset:CGVector(dx:0.5,dy:0.5)).tap();return
-                    }
-                }
-            }
-        }
         var deadline=Date().addingTimeInterval(120)
-        while puzzleValues(app)["googleAd"] != "loaded",Date()<deadline {answerPrompts();Thread.sleep(forTimeInterval:1)}
+        while puzzleValues(app)["googleAd"] != "loaded",Date()<deadline {answerAdPrompts(app,springboard);Thread.sleep(forTimeInterval:1)}
         XCTAssertEqual(puzzleValues(app)["googleAd"],"loaded","Google's sample ad loads: \(puzzleValues(app)["googleAd"] ?? "")")
         XCTAssertTrue(app.buttons["ad-break-short"].waitForExistence(timeout:10))
         XCTAssertEqual(puzzleValues(app)["adOffer"],"4|16")
@@ -287,6 +273,75 @@ final class CloudChessUITests:XCTestCase {
         puzzleReady(app,timeout:90)
         XCTAssertEqual(puzzleValues(app)["freeRemaining"],"3","Four granted, one used by this puzzle")
         let after=XCTAttachment(screenshot:app.screenshot());after.name="Puzzle after the rewarded ad";after.lifetime = .keepAlways;add(after)
+    }
+    /// Taps Apple's tracking prompt or Google's IDFA explainer/consent form; returns what it tapped.
+    @discardableResult @MainActor private func answerAdPrompts(_ app:XCUIApplication,_ springboard:XCUIApplication,allow:Bool=false) -> String? {
+        for label in allow ? ["Allow"]:["Ask App Not to Track","Don’t Allow"] {let b=springboard.buttons[label];if b.exists {b.tap();return label}}
+        // Google's IDFA explainer / consent form is a web view; its controls surface as buttons or links.
+        for label in ["Continue","Consent","Do not consent"] {
+            // UMP's web view reports its controls as not hittable, so tap their centre.
+            // Google keeps a second, offscreen copy of its form, so pick the copy on screen.
+            let screen=app.frame
+            for query in [app.buttons.matching(identifier:label),app.links.matching(identifier:label)] {
+                for b in query.allElementsBoundByIndex where !b.frame.isEmpty && screen.contains(CGPoint(x:b.frame.midX,y:b.frame.midY)) {
+                    b.coordinate(withNormalizedOffset:CGVector(dx:0.5,dy:0.5)).tap();return label
+                }
+            }
+        }
+        return nil
+    }
+    /// App Review (Guideline 2.1): Apple's tracking prompt appears on a fresh
+    /// launch, before the ad SDK starts or any ad is requested, not at puzzle 5.
+    @MainActor func testTrackingPromptAppearsAtFirstLaunch() throws {
+        continueAfterFailure=false
+        let springboard=XCUIApplication(bundleIdentifier:"com.apple.springboard")
+        let app=XCUIApplication();app.resetAuthorizationStatus(for:.userTracking)
+        app.launchArguments=["--uitesting","--real-ads","--board=6x6","--puzzle-mate=2","--reduced-motion"]
+        app.launch()
+        let allow=springboard.buttons["Ask App Not to Track"]
+        var deadline=Date().addingTimeInterval(60),explainer=false
+        while !allow.exists,Date()<deadline {if answerAdPrompts(app,springboard) == "Continue" {explainer=true};Thread.sleep(forTimeInterval:0.5)}
+        XCTAssertTrue(allow.exists,"Apple's tracking prompt appears at launch")
+        let prompt=XCTAttachment(screenshot:XCUIScreen.main.screenshot());prompt.name="Tracking prompt at first launch";prompt.lifetime = .keepAlways;add(prompt)
+        XCTAssertEqual(puzzleValues(app)["tracking"],"0","Not determined until answered")
+        XCTAssertEqual(puzzleValues(app)["googleAd"],"off","No ad SDK runs before the answer")
+        allow.tap()
+        deadline=Date().addingTimeInterval(10)
+        while puzzleValues(app)["tracking"] == "0",Date()<deadline {Thread.sleep(forTimeInterval:0.3)}
+        XCTAssertEqual(puzzleValues(app)["tracking"],"2","Declining is recorded")
+        XCTAssertEqual(puzzleValues(app)["googleAd"],"off","The SDK still starts lazily, from the fifth puzzle")
+        puzzleReady(app,timeout:90)
+        XCTAssertTrue(app.buttons["square-a1"].exists,"Free play continues after declining")
+        let after=XCTAttachment(screenshot:app.screenshot());after.name="Puzzle after the prompt (explainer: \(explainer))";after.lifetime = .keepAlways;add(after)
+    }
+    /// App Review evidence (Guideline 2.1), physical device only: resets only
+    /// CloudChess's tracking permission, launches the installed build and answers Google's explainer (when served) and Apple's
+    /// prompt, then leaves the player's board untouched. Xcode's screen
+    /// recording of this test is the review video. Opt in with
+    /// TEST_RUNNER_CC_REVIEW_RECORDING=1.
+    @MainActor func testReviewRecordingTrackingPrompt() throws {
+        try XCTSkipUnless(ProcessInfo.processInfo.environment["CC_REVIEW_RECORDING"] == "1","Review recording runs only on request")
+        continueAfterFailure=false
+        let springboard=XCUIApplication(bundleIdentifier:"com.apple.springboard")
+        let app=XCUIApplication(bundleIdentifier:"com.maroon.CloudChess")
+        app.resetAuthorizationStatus(for:.userTracking);app.terminate()
+        // The Mac launches the installed build with devicectl: XCTest's own launch
+        // fails on an iOS release newer than this Xcode's SDK.
+        XCTAssertTrue(app.wait(for:.runningForeground,timeout:120),"CloudChess launched")
+        let decline=springboard.buttons["Ask App Not to Track"]
+        let deadline=Date().addingTimeInterval(60)
+        var explainer=false
+        while !decline.exists,Date()<deadline {
+            let screen=app.frame
+            let shown=[app.buttons.matching(identifier:"Continue"),app.links.matching(identifier:"Continue")].contains {q in q.allElementsBoundByIndex.contains {!$0.frame.isEmpty && screen.contains(CGPoint(x:$0.frame.midX,y:$0.frame.midY))}}
+            if shown,!explainer {explainer=true;Thread.sleep(forTimeInterval:3);answerAdPrompts(app,springboard)}
+            Thread.sleep(forTimeInterval:0.4)
+        }
+        XCTAssertTrue(decline.exists,"Apple's tracking prompt appears at launch")
+        Thread.sleep(forTimeInterval:4)
+        decline.tap()
+        Thread.sleep(forTimeInterval:7)
+        XCTAssertEqual(app.state,.runningForeground,"Play continues after declining")
     }
     @MainActor func testOfflineFreePlayIsBlocked() throws {
         continueAfterFailure=false

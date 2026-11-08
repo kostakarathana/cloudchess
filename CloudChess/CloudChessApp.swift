@@ -175,6 +175,7 @@ struct CloudChessView:View {
         .environment(\.cloudMotion,game.motion)
         .statusBarHidden(true)
         .task{game.configureMotion(reduced:reduceMotion);game.configureNight(animated:false);await game.start()}
+        .task{await game.requestAdConsent()}
         // Switching between cards remains one overlay transaction and one save.
         .onChange(of:modalVisible || game.replayActive){_,_ in updateOverlay()}
         .onChange(of:scenePhase){_,phase in game.setActive(phase == .active);if phase == .active {Task{await subscription.refreshEntitlements()}};if phase == .background {settings=false;showingProfile=false;showingLegal=false;game.showSkip=false;game.showHint=false;game.showNoWin=false;game.promotion=[];game.didEnterBackground()};if phase != .active {game.world.onCancelDrag?()};if phase == .background,ProfileAnalysisFeature.enabled {Task{await OnDeviceProfiles.shared.pause()}}}

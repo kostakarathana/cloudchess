@@ -3,6 +3,7 @@ import StoreKit
 import Security
 import Network
 import GoogleMobileAds
+import AppTrackingTransparency
 import UserMessagingPlatform
 
 @MainActor final class SubscriptionStore: ObservableObject {
@@ -342,8 +343,9 @@ struct NoFillAdService: RewardedAdService { func show() async -> RewardedAdResul
 
 /// Google AdMob rewarded ads with Google's consent SDK (UMP). Info.plist holds
 /// `GADApplicationIdentifier` and `CloudChessRewardedAdUnit`; while either is
-/// empty every request is a no-fill (house ad). The SDK and its consent/ATT
-/// messages start lazily, from a player's fifth puzzle, never at launch.
+/// empty every request is a no-fill (house ad). Consent (and Apple's tracking
+/// prompt) is gathered at launch for players without Premium; the SDK itself
+/// starts lazily, from a player's fifth puzzle, and only after that consent.
 @MainActor final class GoogleRewardedAds: NSObject, ObservableObject, RewardedAdService, FullScreenContentDelegate {
     static let shared = GoogleRewardedAds()
     private let unit: String = {
@@ -358,25 +360,57 @@ struct NoFillAdService: RewardedAdService { func show() async -> RewardedAdResul
     private var ad: RewardedAd?
     private var starting = false, started = false, loading = false, rewarded = false, retries = 0
     private var pending: CheckedContinuation<RewardedAdResult, Never>?
+    private var consent: Task<Void, Never>?
     @Published private(set) var privacyOptionsRequired = false
     var configured: Bool { !unit.isEmpty && !app.isEmpty }
     /// Diagnostic only: off, consent, started, loaded or showing.
     var status: String { pending != nil ? "showing" : ad != nil ? "loaded" : started ? "started" : starting ? "consent" : "off" }
+    /// Diagnostic only: Apple's tracking authorization (0 not determined, 1 restricted, 2 denied, 3 authorized).
+    var tracking: Int { Int(ATTrackingManager.trackingAuthorizationStatus.rawValue) }
     func prepare() {
         guard configured, !starting else { return }
         starting = true
         Task { await gatherConsentAndStart() }
     }
-    /// EEA/UK/Swiss consent (and the IDFA explainer before Apple's ATT prompt)
-    /// come first; ads are requested only when Google says consent allows it.
+    /// EEA/UK/Swiss consent and the IDFA explainer, then Apple's ATT prompt.
+    /// Runs once at launch (and again before the SDK starts if Google could not
+    /// be reached); no ad SDK runs and no ad is requested before it finishes.
     /// Declining limits ad personalization but never blocks free play.
-    private func gatherConsentAndStart() async {
+    func gatherConsent() async {
+        guard configured else { return }
+        if consent == nil { consent = Task { await runConsent() } }
+        await consent?.value
+    }
+    private func runConsent() async {
+        await Self.untilActive()
         trace("consent update")
-        do { try await ConsentInformation.shared.requestConsentInfoUpdate(with: RequestParameters()) } catch { trace("consent update failed: \(error)") }
+        var updated = true
+        do { try await ConsentInformation.shared.requestConsentInfoUpdate(with: RequestParameters()) } catch { updated = false; trace("consent update failed: \(error)") }
         trace("consent status \(ConsentInformation.shared.consentStatus.rawValue), form \(ConsentInformation.shared.formStatus.rawValue), presenter \(String(describing: Self.presenter()))")
-        if let root = Self.presenter() { do { try await ConsentForm.loadAndPresentIfRequired(from: root) } catch { trace("consent form failed: \(error)") } }
+        if updated, let root = Self.presenter() { do { try await ConsentForm.loadAndPresentIfRequired(from: root) } catch { trace("consent form failed: \(error)") } }
         trace("consent done, canRequestAds \(ConsentInformation.shared.canRequestAds)")
         privacyOptionsRequired = ConsentInformation.shared.privacyOptionsRequirementStatus == .required
+        // Google's explainer normally asks; ask directly when it did not (offline, or no message served).
+        await Self.requestTracking()
+        trace("tracking \(ATTrackingManager.trackingAuthorizationStatus.rawValue)")
+        if !updated { consent = nil }
+    }
+    /// Apple shows its prompt only to an active app and may return without
+    /// showing it while another presentation is ending, so retry briefly.
+    private static func requestTracking() async {
+        for _ in 0..<3 {
+            guard ATTrackingManager.trackingAuthorizationStatus == .notDetermined else { return }
+            await untilActive()
+            _ = await ATTrackingManager.requestTrackingAuthorization()
+            guard ATTrackingManager.trackingAuthorizationStatus == .notDetermined else { return }
+            try? await Task.sleep(for: .seconds(1))
+        }
+    }
+    private static func untilActive() async {
+        while UIApplication.shared.applicationState != .active { try? await Task.sleep(for: .milliseconds(250)) }
+    }
+    private func gatherConsentAndStart() async {
+        await gatherConsent()
         guard ConsentInformation.shared.canRequestAds else { starting = false; return }
         _ = await MobileAds.shared.start()
         trace("SDK started")
